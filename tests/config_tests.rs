@@ -21,6 +21,7 @@ fn run_init_with_bin(bin: &str, input: &str) -> Config {
         .env_remove("OPENROUTER_API_KEY")
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("OLLAMA_API_KEY")
+        .env_remove("GEMINI_API_KEY")
         .write_stdin(input);
     cmd.assert().success();
 
@@ -92,6 +93,25 @@ fn claude_cli_profile_resolves_to_cli_backend() {
         }
         _ => panic!("claude_cli profile should resolve to CLI backend"),
     }
+}
+
+#[test]
+#[serial]
+fn gemini_profile_resolves_to_http_backend() {
+    unsafe { std::env::set_var("GEMINI_API_KEY", "test-gemini-key"); }
+    let cfg = Config::default();
+    let eff = cfg
+        .resolve_profile(Some("gemini"), None, None)
+        .expect("gemini profile should resolve");
+    match eff.connection {
+        ProviderConnection::Http(ref conn) => {
+            assert!(conn.base_url.contains("generativelanguage.googleapis.com"));
+            assert_eq!(conn.api_key, "test-gemini-key");
+            assert!(!conn.is_local);
+        }
+        _ => panic!("gemini should resolve to HTTP connection"),
+    }
+    unsafe { std::env::remove_var("GEMINI_API_KEY"); }
 }
 
 #[test]
@@ -315,7 +335,8 @@ fn qq_enable_auto_copy_flag_persists_without_question() {
         .env_remove("OPENAI_API_KEY")
         .env_remove("OPENROUTER_API_KEY")
         .env_remove("ANTHROPIC_API_KEY")
-        .env_remove("OLLAMA_API_KEY");
+        .env_remove("OLLAMA_API_KEY")
+        .env_remove("GEMINI_API_KEY");
     cmd.assert().success();
 
     let cfg = read_config_from_home(&home_path);
@@ -337,6 +358,7 @@ fn qq_disable_auto_copy_flag_persists_without_question() {
         .env_remove("OPENROUTER_API_KEY")
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("OLLAMA_API_KEY")
+        .env_remove("GEMINI_API_KEY")
         .assert()
         .success();
 
@@ -349,6 +371,7 @@ fn qq_disable_auto_copy_flag_persists_without_question() {
         .env_remove("OPENROUTER_API_KEY")
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("OLLAMA_API_KEY")
+        .env_remove("GEMINI_API_KEY")
         .assert()
         .success();
 
