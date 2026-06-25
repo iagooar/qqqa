@@ -614,6 +614,7 @@ mod cli_backend {
         match req.engine {
             CliEngine::Codex => run_codex(req).await,
             CliEngine::Claude => run_claude(req).await,
+            CliEngine::Gemini => run_gemini(req).await,
         }
     }
 
@@ -626,7 +627,7 @@ mod cli_backend {
     {
         match req.engine {
             CliEngine::Claude => run_claude_streaming(req, on_token).await,
-            CliEngine::Codex => Err(anyhow!(
+            CliEngine::Codex | CliEngine::Gemini => Err(anyhow!(
                 "CLI provider '{}' does not support streaming",
                 req.binary
             )),
@@ -715,6 +716,83 @@ mod cli_backend {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         parse_codex_response(&stdout)
+    }
+
+    async fn run_gemini(req: CliCompletionRequest<'_>) -> Result<String> {
+        let mut cmd = Command::new(req.binary);
+        if !req.base_args.is_empty() {
+            cmd.args(req.base_args);
+        }
+        cmd.arg("-o");
+        cmd.arg("json");
+        cmd.arg("--skip-trust");
+        cmd.arg("--approval-mode");
+        cmd.arg("plan");
+        if !req.model.trim().is_empty() {
+            cmd.arg("-m");
+            cmd.arg(req.model);
+        }
+
+        let prompt = format!(
+            "{}\n\n{}\n",
+            tagged_system_prompt(req.system_prompt),
+            tagged_user_prompt(req.user_prompt)
+        );
+
+        if req.debug {
+            eprintln!(
+                "[debug] Running CLI provider '{}' with args: {:?}",
+                req.binary, cmd
+            );
+        }
+
+        let mut child = cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "Failed to spawn CLI provider '{}'. Is it installed and on your PATH?",
+                    req.binary
+                )
+            })?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(prompt.as_bytes())
+                .await
+                .context("Writing prompt to CLI provider stdin")?;
+        }
+
+        let output = wait_child_output_with_timeout(child, req.timeout, req.binary).await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(anyhow!(
+                "CLI provider '{}' exited with status {}.{}{}",
+                req.binary,
+                output
+                    .status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".to_string()),
+                if stdout.trim().is_empty() {
+                    "".to_string()
+                } else {
+                    format!("\nstdout: {}", stdout.trim())
+                },
+                if stderr.trim().is_empty() {
+                    "".to_string()
+                } else {
+                    format!("\nstderr: {}", stderr.trim())
+                }
+            ));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_gemini_response(&stdout)
     }
 
     async fn run_claude(req: CliCompletionRequest<'_>) -> Result<String> {
@@ -1046,6 +1124,32 @@ mod cli_backend {
         Ok(messages.join("\n\n"))
     }
 
+    fn parse_gemini_response(stdout: &str) -> Result<String> {
+        let value = parse_single_json_value(stdout)
+            .with_context(|| "CLI provider returned non-JSON output")?;
+
+        if let Some(err) = value.get("error") {
+            if let Some(msg) = err.get("message").and_then(|m| m.as_str()) {
+                return Err(anyhow!("CLI provider error: {}", msg));
+            }
+            return Err(anyhow!("CLI provider returned error JSON: {}", err));
+        }
+
+        if let Some(response) = value.get("response") {
+            if let Some(text) = extract_text(response) {
+                return Ok(text);
+            }
+        }
+
+        if let Some(text) = extract_text(&value) {
+            return Ok(text);
+        }
+
+        Err(anyhow!(
+            "CLI provider returned JSON without a usable message."
+        ))
+    }
+
     fn parse_claude_response(stdout: &str) -> Result<String> {
         let value = parse_single_json_value(stdout)
             .with_context(|| "CLI provider returned non-JSON output")?;
@@ -1168,7 +1272,7 @@ mod cli_backend {
                         return Some(text.to_string());
                     }
                 }
-                for key in ["content", "messages", "output_text", "result"] {
+                for key in ["content", "messages", "output_text", "result", "output"] {
                     if let Some(val) = map.get(key) {
                         if let Some(text) = extract_text(val) {
                             return Some(text);
@@ -1195,6 +1299,11 @@ mod cli_backend {
     }
 
     #[cfg(test)]
+    pub(super) fn parse_gemini_response_for_test(input: &str) -> Result<String> {
+        parse_gemini_response(input)
+    }
+
+    #[cfg(test)]
     pub(super) fn parse_claude_response_for_test(input: &str) -> Result<String> {
         parse_claude_response(input)
     }
@@ -1213,7 +1322,7 @@ pub use cli_backend::{CliCompletionRequest, run_cli_completion, run_cli_completi
 mod tests {
     use super::cli_backend::{
         parse_claude_response_for_test, parse_claude_stream_line_for_test,
-        parse_codex_response_for_test,
+        parse_codex_response_for_test, parse_gemini_response_for_test,
     };
     use super::load_root_certificates;
     use rcgen::{CertifiedKey, generate_simple_self_signed};
@@ -1270,6 +1379,27 @@ mod tests {
 
         let certs = load_root_certificates(&path).expect("certs load");
         assert_eq!(certs.len(), 1);
+    }
+
+    #[test]
+    fn gemini_parser_reads_response_string() {
+        let payload = r#"{"session_id":"abc","response":"hello gemini"}"#;
+        let parsed = parse_gemini_response_for_test(payload).expect("parse");
+        assert_eq!(parsed, "hello gemini");
+    }
+
+    #[test]
+    fn gemini_parser_reads_response_output_object() {
+        let payload = r#"{"session_id":"abc","response":{"output":"hello output"}}"#;
+        let parsed = parse_gemini_response_for_test(payload).expect("parse");
+        assert_eq!(parsed, "hello output");
+    }
+
+    #[test]
+    fn gemini_parser_surfaces_error_message() {
+        let payload = r#"{"session_id":"abc","error":{"message":"auth failed","code":41}}"#;
+        let err = parse_gemini_response_for_test(payload).unwrap_err();
+        assert!(err.to_string().contains("auth failed"));
     }
 
     #[test]

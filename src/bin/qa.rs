@@ -181,6 +181,10 @@ async fn main() -> Result<()> {
     if cfg.no_emoji_enabled() {
         system_prompt.push_str("\nHard rule: You MUST NOT use emojis anywhere in the response.\n");
     }
+    if let Some(suffix) = &eff.prompt_suffix {
+        system_prompt.push('\n');
+        system_prompt.push_str(suffix);
+    }
     let shell_hint = shell_hint_for_prompt(shell_kind);
     let user_msg = build_qa_user_message(
         Some(os_type),

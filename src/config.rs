@@ -40,6 +40,7 @@ impl Default for ProviderMode {
 pub enum CliEngine {
     Codex,
     Claude,
+    Gemini,
 }
 
 impl CliEngine {
@@ -108,6 +109,9 @@ pub struct Profile {
     /// Optional per-profile request timeout override (seconds as string)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<String>,
+    /// Optional text appended to the built-in system prompt for this profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_suffix: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +131,26 @@ pub struct Config {
     /// Optional list of additional commands allowed for qa execute_command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_allowlist: Option<Vec<String>>,
+    /// Optional text appended to the built-in system prompt for every profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_suffix: Option<String>,
+}
+
+/// Resolve the qqqa config directory for a given home path.
+/// Keeps `~/.qq` when that directory already has a config file; otherwise
+/// honors `XDG_CONFIG_HOME/qq` when the variable is set.
+pub fn config_dir_for_home(home: &Path) -> PathBuf {
+    let legacy = home.join(CONFIG_DIR_NAME);
+    if legacy.join(CONFIG_FILE_NAME).exists() {
+        return legacy;
+    }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        let trimmed = xdg.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("qq");
+        }
+    }
+    legacy
 }
 
 impl Default for Config {
@@ -247,6 +271,24 @@ impl Default for Config {
                 cli: None,
             },
         );
+        model_providers.insert(
+            "gemini_cli".to_string(),
+            ModelProvider {
+                name: "Gemini CLI".to_string(),
+                base_url: "cli://gemini".to_string(),
+                env_key: "GEMINI_CLI_API_KEY".to_string(),
+                api_key: None,
+                local: true,
+                tls: None,
+                mode: ProviderMode::Cli,
+                cli: Some(CliProviderConfig {
+                    engine: CliEngine::Gemini,
+                    binary: "gemini".to_string(),
+                    base_args: Vec::new(),
+                    model_override: None,
+                }),
+            },
+        );
 
         let mut profiles = HashMap::new();
         profiles.insert(
@@ -257,6 +299,7 @@ impl Default for Config {
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
+                prompt_suffix: None,
             },
         );
         profiles.insert(
@@ -267,6 +310,7 @@ impl Default for Config {
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
+                prompt_suffix: None,
             },
         );
         profiles.insert(
@@ -277,6 +321,7 @@ impl Default for Config {
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
+                prompt_suffix: None,
             },
         );
         profiles.insert(
@@ -287,6 +332,7 @@ impl Default for Config {
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
+                prompt_suffix: None,
             },
         );
         profiles.insert(
@@ -297,6 +343,7 @@ impl Default for Config {
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
+                prompt_suffix: None,
             },
         );
         profiles.insert(
@@ -307,6 +354,7 @@ impl Default for Config {
                 reasoning_effort: Some("low".to_string()),
                 temperature: None,
                 timeout: None,
+                prompt_suffix: None,
             },
         );
         profiles.insert(
@@ -317,6 +365,7 @@ impl Default for Config {
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
+                prompt_suffix: None,
             },
         );
         profiles.insert(
@@ -327,6 +376,18 @@ impl Default for Config {
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
+                prompt_suffix: None,
+            },
+        );
+        profiles.insert(
+            "gemini_cli".to_string(),
+            Profile {
+                model_provider: "gemini_cli".to_string(),
+                model: "gemini-3-flash-preview".to_string(),
+                reasoning_effort: None,
+                temperature: None,
+                timeout: None,
+                prompt_suffix: None,
             },
         );
 
@@ -338,6 +399,7 @@ impl Default for Config {
             copy_first_command: false,
             no_emoji: None,
             command_allowlist: None,
+            prompt_suffix: None,
         }
     }
 }
@@ -374,6 +436,7 @@ pub struct EffectiveProfile {
     pub connection: ProviderConnection,
     pub reasoning_effort: Option<String>,
     pub temperature: Option<f32>,
+    pub prompt_suffix: Option<String>,
 }
 
 impl EffectiveProfile {
@@ -403,7 +466,7 @@ impl Config {
     /// Load config from disk or create a default one on first run.
     pub fn load_or_init(debug: bool) -> Result<(Self, PathBuf)> {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
-        let dir = home.join(CONFIG_DIR_NAME);
+        let dir = config_dir_for_home(&home);
         let path = dir.join(CONFIG_FILE_NAME);
 
         if !dir.exists() {
@@ -614,6 +677,11 @@ impl Config {
             connection,
             reasoning_effort: profile.reasoning_effort.clone(),
             temperature: profile.temperature,
+            prompt_suffix: profile
+                .prompt_suffix
+                .clone()
+                .or_else(|| self.prompt_suffix.clone())
+                .filter(|suffix| !suffix.trim().is_empty()),
         })
     }
 
@@ -624,7 +692,7 @@ impl Config {
         use std::io::{self, Write};
 
         let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
-        let dir = home.join(CONFIG_DIR_NAME);
+        let dir = config_dir_for_home(&home);
         let path = dir.join(CONFIG_FILE_NAME);
 
         if !dir.exists() {
@@ -653,7 +721,10 @@ impl Config {
             "  [7] Claude Code CLI — use the local `claude` binary (Claude desktop / npm package)"
         );
         println!("  [8] Gemini — gemini-3-flash-preview (Google's Gemini via OpenAI-compatible API)");
-        print!("Enter 1-8 [1]: ");
+        println!(
+            "  [9] Gemini CLI — use the local `gemini` binary (Google sign-in or GEMINI_API_KEY)"
+        );
+        print!("Enter 1-9 [1]: ");
         io::stdout().flush().ok();
         let mut choice = String::new();
         io::stdin().read_line(&mut choice).ok();
@@ -668,6 +739,7 @@ impl Config {
                 cfg.default_profile = "claude_cli".to_string()
             }
             "8" | "gemini" => cfg.default_profile = "gemini".to_string(),
+            "9" | "gemini-cli" | "gemini_cli" => cfg.default_profile = "gemini_cli".to_string(),
             "1" | "openrouter" => cfg.default_profile = "openrouter".to_string(),
             _ => cfg.default_profile = "openrouter".to_string(),
         }
@@ -746,6 +818,10 @@ impl Config {
                             "Install Claude Code (`npm install -g @anthropic-ai/claude-code`) so '{}' is available on your PATH.",
                             bin
                         ),
+                        "gemini_cli" => format!(
+                            "Install Gemini CLI (`npm install -g @google/gemini-cli`) so '{}' is available on your PATH.",
+                            bin
+                        ),
                         _ => format!(
                             "Ensure the '{}' CLI binary is installed and on your PATH.",
                             bin
@@ -754,6 +830,7 @@ impl Config {
                     let auth = match provider_key.as_str() {
                         "codex" => "No API key is required; the Codex CLI handles auth using your ChatGPT subscription.",
                         "claude_cli" => "No API key is required; run `claude login` so the CLI can reuse your Claude subscription.",
+                        "gemini_cli" => "Sign in via `gemini` once, or set GEMINI_API_KEY for API-key auth.",
                         _ => "Authentication is handled by the CLI runtime itself.",
                     }
                     .to_string();

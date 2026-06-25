@@ -1,6 +1,6 @@
 [package]
 name = "qqqa"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 license = "MIT"
 description = "qqqa CLI (qq and qa) - fast, stateless LLM in the terminal"

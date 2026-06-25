@@ -13,7 +13,7 @@ The two binaries are:
 
 qqqa runs on macOS, Linux, and Windows.
 
-By default the repo includes profiles for OpenRouter (default), OpenAI, Groq, Gemini, a local Ollama runtime, the Codex CLI (piggyback on ChatGPT), and the Claude Code CLI (reuse your Claude subscription). An Anthropic profile stub exists in the config for future work but is not wired up yet.
+By default the repo includes profiles for OpenRouter (default), OpenAI, Groq, Gemini (API + CLI), a local Ollama runtime, the Codex CLI (piggyback on ChatGPT), and the Claude Code CLI (reuse your Claude subscription). An Anthropic profile stub exists in the config for future work but is not wired up yet.
 
 
 
@@ -124,13 +124,17 @@ brew install qqqa
 
 Download a prebuilt archive from the [GitHub Releases](https://github.com/iagooar/qqqa/releases) page, extract it, and place `qq`/`qa` somewhere on your `PATH` (e.g., `/usr/local/bin`).
 
+On Arch Linux, `/usr/bin/qq` may already belong to another package. Install the release binaries to a custom directory (for example `~/bin`) and rename them if needed, or use `cargo install` from this repo.
+
 ### Windows
 
 Download the Windows archive from Releases (choose the architecture that matches your machine), extract `qq.exe` and `qa.exe`, and add them to your `%PATH%`.
 
 ## Configure
 
-On first run qqqa creates `~/.qq/config.json` with safe permissions. For a smooth first interaction, run the init flow:
+On first run qqqa creates a config file with safe permissions. The default path is `~/.qq/config.json`. If `XDG_CONFIG_HOME` is set and no legacy `~/.qq/config.json` exists, config is stored at `$XDG_CONFIG_HOME/qq/config.json` instead.
+
+For a smooth first interaction, run the init flow:
 
 ```sh
 # Interactive setup (choose provider and set key)
@@ -152,6 +156,7 @@ The initializer lets you choose the default provider:
 - Claude Code CLI + `claude-haiku-4-5` (wraps the `claude` binary; `qq` streams live, `qa` buffers so it can parse tool calls)
   - Need to force a different desktop model? Add `"model_override"` under the provider's `cli` block (supported for both Codex and Claude). That override wins over the profile default but still yields to the per-run `--model` flag.
 - Gemini + `gemini-3-flash-preview` (Google's Gemini via OpenAI-compatible API)
+- Gemini CLI + `gemini-3-flash-preview` (wraps the `gemini` binary; sign in once or set `GEMINI_API_KEY`; buffered output only)
 
 It also offers to store an API key in the config (optional). If you prefer environment variables, leave it blank and set one of:
 
@@ -160,7 +165,7 @@ It also offers to store an API key in the config (optional). If you prefer envir
 - `OPENAI_API_KEY` for OpenAI
 - `GEMINI_API_KEY` for Gemini (Google AI Studio)
 - `OLLAMA_API_KEY` (optional; any non-empty string works—even `local`—because the Authorization header cannot be blank)
-- No API key is required for the Codex or Claude CLI profiles—their binaries handle auth (`codex login` / `claude login`).
+- No API key is required for the Codex or Claude CLI profiles—their binaries handle auth (`codex login` / `claude login`). Gemini CLI accepts Google sign-in or `GEMINI_API_KEY`.
 
 Defaults written to `~/.qq/config.json`:
 
@@ -171,6 +176,7 @@ Defaults written to `~/.qq/config.json`:
   - `ollama` → base `http://127.0.0.1:11434/v1`, env `OLLAMA_API_KEY` (qqqa auto-injects a non-empty placeholder if you leave it unset)
   - `anthropic` → base `https://api.anthropic.com/v1`, env `ANTHROPIC_API_KEY` (present in the config schema for future support; not usable yet)
   - `gemini` → base `https://generativelanguage.googleapis.com/v1beta/openai`, env `GEMINI_API_KEY`
+  - `gemini_cli` → mode `cli`, binary `gemini` (install `@google/gemini-cli`; auth via Google sign-in or `GEMINI_API_KEY`)
   - `codex` → mode `cli`, binary `codex` with base args `exec` (install Codex CLI; auth handled by `codex login`). Optional `"model_override"` in the `cli` block forces a fallback ChatGPT model if OpenAI retires the default.
   - `claude_cli` → mode `cli`, binary `claude` (install `@anthropic-ai/claude-code`; auth handled by `claude login`). Optional `"model_override"` pins Claude Code’s `--model` flag without touching your profile’s model.
   - `codex` → CLI provider, binary `codex` - fails if the binary is missing
@@ -181,7 +187,9 @@ Defaults written to `~/.qq/config.json`:
   - `ollama` → model `llama3.1`
   - `anthropic` → model `claude-3-5-sonnet-20241022` (inactive placeholder until Anthropic integration lands)
   - `gemini` → model `gemini-3-flash-preview`
+  - `gemini_cli` → model `gemini-3-flash-preview` (passed to `gemini -m`)
   - `codex` → model label `gpt-5` (only used for display; Codex CLI picks the backing ChatGPT model)
+- Optional per-profile or global `prompt_suffix` text appended to the built-in system prompt (does not replace it). Useful for rules like "assume tools are installed" or "be less chatty".
 - Optional per-profile `reasoning_effort` for GPT-5 family models. If you leave it unset, qqqa sends `"reasoning_effort": "minimal"` for any `gpt-5*` model to keep responses fast. Set it to `"low"`, `"medium"`, or `"high"` when you want deeper reasoning.
 - (discouraged) Optional per-profile `temperature`. Most models default to `0.15` unless you set it in `~/.qq/config.json` or pass `--temperature <value>` for a single run. GPT-5 models ignore custom temperatures; qqqa forces them to `1.0`.
 - (discouraged): you can change the timeout, e.g. `"timeout": "240"` under a model profile in `~/.qq/config.json` to raise the per-request limit (`qq` + `qa` default to 180 s - this is SLOW; faster models are a better fix).

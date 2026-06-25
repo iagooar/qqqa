@@ -159,6 +159,61 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
 }
 
 #[tokio::test]
+async fn run_cli_completion_invokes_gemini_with_expected_args() {
+    let dir = tempdir().unwrap();
+    let script_path = dir.path().join("fake_gemini");
+    let args_dump = dir.path().join("gemini_args.txt");
+    let prompt_dump = dir.path().join("gemini_prompt.txt");
+    let script = format!(
+        r#"#!/bin/sh
+set -eu
+printf '%s\0' "$@" > "{args}"
+cat > "{prompt}"
+printf '%s\n' '{{"session_id":"test","response":"gemini ok"}}'
+"#,
+        args = args_dump.display(),
+        prompt = prompt_dump.display()
+    );
+    write_executable_script(&script_path, &script);
+
+    let text = run_cli_completion_with_retry(|| CliCompletionRequest {
+        engine: CliEngine::Gemini,
+        binary: script_path.to_str().unwrap(),
+        base_args: &[],
+        system_prompt: "SYSTEM",
+        user_prompt: "USER",
+        model: "gemini-3-flash-preview",
+        reasoning_effort: None,
+        debug: false,
+        timeout: Duration::from_secs(5),
+    })
+    .await
+    .expect("cli run succeeds");
+
+    assert_eq!(text.trim(), "gemini ok");
+
+    let args = read_args(&args_dump);
+    let expected: Vec<String> = vec![
+        "-o",
+        "json",
+        "--skip-trust",
+        "--approval-mode",
+        "plan",
+        "-m",
+        "gemini-3-flash-preview",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    assert_eq!(args, expected);
+
+    let prompt_contents = fs::read_to_string(&prompt_dump).expect("prompt file");
+    let expected_prompt =
+        "<system-prompt>\nSYSTEM\n</system-prompt>\n\n<user-prompt>\nUSER\n</user-prompt>\n";
+    assert_eq!(prompt_contents, expected_prompt);
+}
+
+#[tokio::test]
 async fn run_cli_completion_invokes_claude_with_expected_args() {
     let dir = tempdir().unwrap();
     let script_path = dir.path().join("fake_claude");
