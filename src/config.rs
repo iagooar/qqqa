@@ -234,6 +234,19 @@ impl Default for Config {
                 }),
             },
         );
+        model_providers.insert(
+            "gemini".to_string(),
+            ModelProvider {
+                name: "Gemini".to_string(),
+                base_url: "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
+                env_key: "GEMINI_API_KEY".to_string(),
+                api_key: None,
+                local: false,
+                tls: None,
+                mode: ProviderMode::Http,
+                cli: None,
+            },
+        );
 
         let mut profiles = HashMap::new();
         profiles.insert(
@@ -301,6 +314,16 @@ impl Default for Config {
             Profile {
                 model_provider: "claude_cli".to_string(),
                 model: "claude-haiku-4-5".to_string(),
+                reasoning_effort: None,
+                temperature: None,
+                timeout: None,
+            },
+        );
+        profiles.insert(
+            "gemini".to_string(),
+            Profile {
+                model_provider: "gemini".to_string(),
+                model: "gemini-3-flash-preview".to_string(),
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
@@ -629,7 +652,8 @@ impl Config {
         println!(
             "  [7] Claude Code CLI — use the local `claude` binary (Claude desktop / npm package)"
         );
-        print!("Enter 1, 2, 3, 4, 5, 6, or 7 [1]: ");
+        println!("  [8] Gemini — gemini-3-flash-preview (Google's Gemini via OpenAI-compatible API)");
+        print!("Enter 1-8 [1]: ");
         io::stdout().flush().ok();
         let mut choice = String::new();
         io::stdin().read_line(&mut choice).ok();
@@ -643,6 +667,7 @@ impl Config {
             "7" | "claude" | "claude-cli" | "claude_code" => {
                 cfg.default_profile = "claude_cli".to_string()
             }
+            "8" | "gemini" => cfg.default_profile = "gemini".to_string(),
             "1" | "openrouter" => cfg.default_profile = "openrouter".to_string(),
             _ => cfg.default_profile = "openrouter".to_string(),
         }

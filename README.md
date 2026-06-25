@@ -13,7 +13,7 @@ The two binaries are:
 
 qqqa runs on macOS, Linux, and Windows.
 
-By default the repo includes profiles for OpenRouter (default), OpenAI, Groq, a local Ollama runtime, the Codex CLI (piggyback on ChatGPT), and the Claude Code CLI (reuse your Claude subscription). An Anthropic profile stub exists in the config for future work but is not wired up yet.
+By default the repo includes profiles for OpenRouter (default), OpenAI, Groq, Gemini, a local Ollama runtime, the Codex CLI (piggyback on ChatGPT), and the Claude Code CLI (reuse your Claude subscription). An Anthropic profile stub exists in the config for future work but is not wired up yet.
 
 
 
@@ -151,12 +151,14 @@ The initializer lets you choose the default provider:
 - Codex CLI + `gpt-5` (wraps the `codex exec` binary so you can reuse a ChatGPT subscription; no API key needed, buffered output only)
 - Claude Code CLI + `claude-haiku-4-5` (wraps the `claude` binary; `qq` streams live, `qa` buffers so it can parse tool calls)
   - Need to force a different desktop model? Add `"model_override"` under the provider's `cli` block (supported for both Codex and Claude). That override wins over the profile default but still yields to the per-run `--model` flag.
+- Gemini + `gemini-3-flash-preview` (Google's Gemini via OpenAI-compatible API)
 
 It also offers to store an API key in the config (optional). If you prefer environment variables, leave it blank and set one of:
 
 - `OPENROUTER_API_KEY` for OpenRouter (default)
 - `GROQ_API_KEY` for Groq
 - `OPENAI_API_KEY` for OpenAI
+- `GEMINI_API_KEY` for Gemini (Google AI Studio)
 - `OLLAMA_API_KEY` (optional; any non-empty string works—even `local`—because the Authorization header cannot be blank)
 - No API key is required for the Codex or Claude CLI profiles—their binaries handle auth (`codex login` / `claude login`).
 
@@ -168,6 +170,7 @@ Defaults written to `~/.qq/config.json`:
   - `groq` → base `https://api.groq.com/openai/v1`, env `GROQ_API_KEY`
   - `ollama` → base `http://127.0.0.1:11434/v1`, env `OLLAMA_API_KEY` (qqqa auto-injects a non-empty placeholder if you leave it unset)
   - `anthropic` → base `https://api.anthropic.com/v1`, env `ANTHROPIC_API_KEY` (present in the config schema for future support; not usable yet)
+  - `gemini` → base `https://generativelanguage.googleapis.com/v1beta/openai`, env `GEMINI_API_KEY`
   - `codex` → mode `cli`, binary `codex` with base args `exec` (install Codex CLI; auth handled by `codex login`). Optional `"model_override"` in the `cli` block forces a fallback ChatGPT model if OpenAI retires the default.
   - `claude_cli` → mode `cli`, binary `claude` (install `@anthropic-ai/claude-code`; auth handled by `claude login`). Optional `"model_override"` pins Claude Code’s `--model` flag without touching your profile’s model.
   - `codex` → CLI provider, binary `codex` - fails if the binary is missing
@@ -177,6 +180,7 @@ Defaults written to `~/.qq/config.json`:
   - `groq` → model `openai/gpt-oss-20b`
   - `ollama` → model `llama3.1`
   - `anthropic` → model `claude-3-5-sonnet-20241022` (inactive placeholder until Anthropic integration lands)
+  - `gemini` → model `gemini-3-flash-preview`
   - `codex` → model label `gpt-5` (only used for display; Codex CLI picks the backing ChatGPT model)
 - Optional per-profile `reasoning_effort` for GPT-5 family models. If you leave it unset, qqqa sends `"reasoning_effort": "minimal"` for any `gpt-5*` model to keep responses fast. Set it to `"low"`, `"medium"`, or `"high"` when you want deeper reasoning.
 - (discouraged) Optional per-profile `temperature`. Most models default to `0.15` unless you set it in `~/.qq/config.json` or pass `--temperature <value>` for a single run. GPT-5 models ignore custom temperatures; qqqa forces them to `1.0`.
