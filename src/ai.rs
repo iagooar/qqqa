@@ -18,6 +18,18 @@ pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_TEMPERATURE: f32 = 0.15;
 
+fn format_api_error(status: reqwest::StatusCode, body: &str, base_url: &str) -> anyhow::Error {
+    let mut message = format!("API error ({}): {}", status, body);
+    if status.as_u16() == 402 && base_url.contains("openrouter.ai") {
+        message.push_str(
+            "\n\nOpenRouter hint: many models require a positive credit balance even when using free variants. \
+Try a model slug ending in :free (for example openrouter/free), or add credits at \
+https://openrouter.ai/settings/credits . See https://openrouter.ai/docs/faq for free-tier limits.",
+        );
+    }
+    anyhow!(message)
+}
+
 /// Minimal OpenAI-compatible chat streaming delta payload
 #[derive(Debug, Deserialize)]
 struct ChatStreamChunkChoiceDelta {
@@ -271,7 +283,7 @@ impl ChatClient {
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
-            return Err(anyhow!("API error ({}): {}", status, text));
+            return Err(format_api_error(status, &text, &self.base_url));
         }
         let parsed: ChatResponse = serde_json::from_str(&text)
             .with_context(|| format!("Failed to parse chat response JSON: {}", text))?;
@@ -308,7 +320,7 @@ impl ChatClient {
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
-            return Err(anyhow!("API error ({}): {}", status, text));
+            return Err(format_api_error(status, &text, &self.base_url));
         }
         let parsed: ChatResponse = serde_json::from_str(&text)
             .with_context(|| format!("Failed to parse chat response JSON: {}", text))?;
@@ -347,7 +359,7 @@ impl ChatClient {
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
-            return Err(anyhow!("API error ({}): {}", status, text));
+            return Err(format_api_error(status, &text, &self.base_url));
         }
 
         // Try to parse as tool-aware response first
@@ -413,7 +425,7 @@ impl ChatClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("API error ({}): {}", status, text));
+            return Err(format_api_error(status, &text, &self.base_url));
         }
 
         // The OpenAI-compatible API returns text/event-stream with lines prefixed by "data: ".
@@ -493,7 +505,7 @@ impl ChatClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("API error ({}): {}", status, text));
+            return Err(format_api_error(status, &text, &self.base_url));
         }
 
         // Reuse the same SSE parsing as non-message streaming
@@ -1207,6 +1219,31 @@ mod tests {
     use rcgen::{CertifiedKey, generate_simple_self_signed};
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn format_api_error_adds_openrouter_hint_for_402() {
+        let err = super::format_api_error(
+            reqwest::StatusCode::PAYMENT_REQUIRED,
+            r#"{"error":{"message":"Insufficient credits"}}"#,
+            "https://openrouter.ai/api/v1",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains(":free"));
+        assert!(msg.contains("openrouter.ai/settings/credits"));
+    }
+
+    #[test]
+    fn format_api_error_omits_openrouter_hint_for_other_providers() {
+        let err = super::format_api_error(
+            reqwest::StatusCode::PAYMENT_REQUIRED,
+            r#"{"error":{"message":"Insufficient credits"}}"#,
+            "https://api.openai.com/v1",
+        );
+        assert_eq!(
+            err.to_string(),
+            r#"API error (402 Payment Required): {"error":{"message":"Insufficient credits"}}"#
+        );
+    }
 
     #[test]
     fn load_root_certificates_supports_multiple_pem_entries() {
