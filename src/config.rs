@@ -291,7 +291,7 @@ impl Default for Config {
             Profile {
                 model_provider: "codex".to_string(),
                 model: "gpt-5".to_string(),
-                reasoning_effort: Some("minimal".to_string()),
+                reasoning_effort: Some("low".to_string()),
                 temperature: None,
                 timeout: None,
             },

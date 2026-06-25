@@ -127,7 +127,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         system_prompt: "SYSTEM",
         user_prompt: "USER",
         model: "gpt-5",
-        reasoning_effort: Some("minimal"),
+        reasoning_effort: Some("low"),
         debug: false,
         timeout: Duration::from_secs(5),
     })
@@ -142,11 +142,9 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         "--skip-git-repo-check",
         "--json",
         "-c",
-        "model_reasoning_effort=minimal",
+        "model_reasoning_effort=low",
         "-c",
         "sandbox_mode=read-only",
-        "-c",
-        "tools.web_search=false",
         "-",
     ]
     .into_iter()
