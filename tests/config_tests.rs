@@ -1,6 +1,6 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use fs_err as fs;
-use qqqa::config::{Config, ProviderConnection};
+use qqqa::config::{config_dir_for_home, Config, ProviderConnection};
 use serial_test::serial;
 use std::path::Path;
 use tempfile::tempdir;
@@ -25,7 +25,7 @@ fn run_init_with_bin(bin: &str, input: &str) -> Config {
         .write_stdin(input);
     cmd.assert().success();
 
-    let config_path = home_path.join(".qq").join("config.json");
+    let config_path = config_dir_for_home(&home_path).join("config.json");
     let bytes = fs::read(&config_path).expect("config json");
     serde_json::from_slice(&bytes).expect("parse config")
 }
@@ -39,7 +39,7 @@ fn run_qa_init(input: &str) -> Config {
 }
 
 fn read_config_from_home(home: &Path) -> Config {
-    let config_path = home.join(".qq").join("config.json");
+    let config_path = config_dir_for_home(home).join("config.json");
     let bytes = fs::read(&config_path).expect("config json");
     serde_json::from_slice(&bytes).expect("parse config")
 }
@@ -377,4 +377,72 @@ fn qq_disable_auto_copy_flag_persists_without_question() {
 
     let cfg = read_config_from_home(&home_path);
     assert!(!cfg.copy_first_command_enabled());
+}
+
+#[test]
+fn gemini_cli_profile_resolves_to_cli_backend() {
+    let cfg = Config::default();
+    let eff = cfg
+        .resolve_profile(Some("gemini_cli"), None, None)
+        .expect("gemini_cli profile should resolve");
+    match eff.connection {
+        ProviderConnection::Cli(ref conn) => assert_eq!(conn.binary, "gemini"),
+        _ => panic!("gemini_cli profile should resolve to CLI backend"),
+    }
+}
+
+#[test]
+fn profile_prompt_suffix_overrides_global_suffix() {
+    let mut cfg = Config::default();
+    cfg.prompt_suffix = Some("global suffix".to_string());
+    cfg.profiles
+        .get_mut("openrouter")
+        .expect("openrouter profile")
+        .prompt_suffix = Some("profile suffix".to_string());
+    let eff = cfg
+        .resolve_profile(Some("openrouter"), None, None)
+        .expect("profile resolves");
+    assert_eq!(eff.prompt_suffix.as_deref(), Some("profile suffix"));
+}
+
+#[test]
+fn global_prompt_suffix_applies_when_profile_has_none() {
+    let mut cfg = Config::default();
+    cfg.prompt_suffix = Some("global suffix".to_string());
+    let eff = cfg
+        .resolve_profile(Some("openrouter"), None, None)
+        .expect("profile resolves");
+    assert_eq!(eff.prompt_suffix.as_deref(), Some("global suffix"));
+}
+
+#[test]
+#[serial]
+fn config_dir_uses_xdg_when_legacy_missing() {
+    let home = tempdir().expect("temp home");
+    let xdg = tempdir().expect("temp xdg");
+    unsafe {
+        std::env::set_var("XDG_CONFIG_HOME", xdg.path());
+    }
+    let dir = config_dir_for_home(home.path());
+    assert_eq!(dir, xdg.path().join("qq"));
+    unsafe {
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+}
+
+#[test]
+fn config_dir_keeps_legacy_when_config_exists() {
+    let home = tempdir().expect("temp home");
+    let xdg = tempdir().expect("temp xdg");
+    let legacy = home.path().join(".qq");
+    fs::create_dir_all(&legacy).expect("legacy dir");
+    fs::write(legacy.join("config.json"), "{}").expect("legacy config");
+    unsafe {
+        std::env::set_var("XDG_CONFIG_HOME", xdg.path());
+    }
+    let dir = config_dir_for_home(home.path());
+    assert_eq!(dir, legacy);
+    unsafe {
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
 }

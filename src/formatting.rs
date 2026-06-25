@@ -404,26 +404,28 @@ mod tests {
 
     #[test]
     fn streaming_handles_cumulative_chunks() {
-        let chunks = [
-            "<cmd>ffmpeg -i input.mov output.mp4</cmd>",
-            "<cmd>ffmpeg -i input.mov output.mp4</cmd> <info>done</info>",
-            "<cmd>ffmpeg -i input.mov output.mp4</cmd> <info>done</info>",
-        ];
-        let mut fmt = StreamingFormatter::new();
-        let mut printed = String::new();
-        for chunk in chunks {
-            if let Some(delta) = fmt.push(chunk) {
-                printed.push_str(&delta);
+        with_color_setting(true, || {
+            let chunks = [
+                "<cmd>ffmpeg -i input.mov output.mp4</cmd>",
+                "<cmd>ffmpeg -i input.mov output.mp4</cmd> <info>done</info>",
+                "<cmd>ffmpeg -i input.mov output.mp4</cmd> <info>done</info>",
+            ];
+            let mut fmt = StreamingFormatter::new();
+            let mut printed = String::new();
+            for chunk in chunks {
+                if let Some(delta) = fmt.push(chunk) {
+                    printed.push_str(&delta);
+                }
             }
-        }
-        if let Some(tail) = fmt.flush() {
-            printed.push_str(&tail);
-        }
-        let final_render = fmt.rendered();
-        let expected =
-            render_xmlish_to_ansi("<cmd>ffmpeg -i input.mov output.mp4</cmd> <info>done</info>");
-        assert_eq!(final_render, expected);
-        assert_eq!(printed, expected);
+            if let Some(tail) = fmt.flush() {
+                printed.push_str(&tail);
+            }
+            let final_render = fmt.rendered();
+            let expected =
+                render_xmlish_to_ansi("<cmd>ffmpeg -i input.mov output.mp4</cmd> <info>done</info>");
+            assert_eq!(final_render, expected);
+            assert_eq!(printed, expected);
+        });
     }
 
     #[test]

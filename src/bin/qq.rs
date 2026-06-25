@@ -225,6 +225,10 @@ async fn main() -> Result<()> {
     if cfg.no_emoji_enabled() {
         system.push_str("\nHard rule: You MUST NOT use emojis anywhere in the response.\n");
     }
+    if let Some(suffix) = &eff.prompt_suffix {
+        system.push('\n');
+        system.push_str(suffix);
+    }
     let os_details = os_info::get();
     let os_type = os_details.os_type();
     let shell_kind = detect_shell(os_type);
