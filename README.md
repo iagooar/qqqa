@@ -66,7 +66,7 @@ Example `~/.qq/config.json` fragment that pins Codex as the default profile:
     "codex": {
       "model_provider": "codex",
       "model": "gpt-5",
-      "reasoning_effort": "minimal"
+      "reasoning_effort": "low"
     }
   }
 }

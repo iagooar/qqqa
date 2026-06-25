@@ -636,13 +636,11 @@ mod cli_backend {
             cmd.arg("--skip-git-repo-check");
         }
         cmd.arg("--json");
-        let reasoning = req.reasoning_effort.unwrap_or("minimal");
+        let reasoning = req.reasoning_effort.unwrap_or("low");
         cmd.arg("-c");
         cmd.arg(format!("model_reasoning_effort={}", reasoning));
         cmd.arg("-c");
         cmd.arg("sandbox_mode=read-only");
-        cmd.arg("-c");
-        cmd.arg("tools.web_search=false");
         cmd.arg("-");
 
         let prompt = format!(
