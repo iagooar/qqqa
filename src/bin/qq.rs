@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
             let mut out = msg.clone();
             if msg.contains("Missing API key") {
                 out.push_str(
-                    "\n\nFix it quickly:\n- Run `qq --init` and choose provider; optionally paste the API key.\n- Or export an env var, e.g.\n    export OPENROUTER_API_KEY=... # OpenRouter (default)\n    export GROQ_API_KEY=...  # Groq\n    export OPENAI_API_KEY=... # OpenAI",
+                    "\n\nFix it quickly:\n- Run `qq --init` and choose provider; optionally paste the API key.\n- Or export an env var, e.g.\n    export OPENROUTER_API_KEY=... # OpenRouter (default)\n    export GROQ_API_KEY=...  # Groq\n    export OPENAI_API_KEY=... # OpenAI\n    export REQUESTY_API_KEY=...  # Requesty (OpenAI-compatible router)",
                 );
             }
             return Err(anyhow!(out));

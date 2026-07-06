@@ -197,6 +197,19 @@ impl Default for Config {
             },
         );
         model_providers.insert(
+            "requesty".to_string(),
+            ModelProvider {
+                name: "Requesty".to_string(),
+                base_url: "https://router.requesty.ai/v1".to_string(),
+                env_key: "REQUESTY_API_KEY".to_string(),
+                api_key: None,
+                local: false,
+                tls: None,
+                mode: ProviderMode::Http,
+                cli: None,
+            },
+        );
+        model_providers.insert(
             "anthropic".to_string(),
             ModelProvider {
                 name: "Anthropic".to_string(),
@@ -318,6 +331,17 @@ impl Default for Config {
             Profile {
                 model_provider: "groq".to_string(),
                 model: "openai/gpt-oss-20b".to_string(),
+                reasoning_effort: None,
+                temperature: None,
+                timeout: None,
+                prompt_suffix: None,
+            },
+        );
+        profiles.insert(
+            "requesty".to_string(),
+            Profile {
+                model_provider: "requesty".to_string(),
+                model: "openai/gpt-4o-mini".to_string(),
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
@@ -724,7 +748,8 @@ impl Config {
         println!(
             "  [9] Gemini CLI — use the local `gemini` binary (Google sign-in or GEMINI_API_KEY)"
         );
-        print!("Enter 1-9 [1]: ");
+        println!("  [10] Requesty — openai/gpt-4o-mini (OpenAI-compatible router)");
+        print!("Enter 1-10 [1]: ");
         io::stdout().flush().ok();
         let mut choice = String::new();
         io::stdin().read_line(&mut choice).ok();
@@ -740,6 +765,7 @@ impl Config {
             }
             "8" | "gemini" => cfg.default_profile = "gemini".to_string(),
             "9" | "gemini-cli" | "gemini_cli" => cfg.default_profile = "gemini_cli".to_string(),
+            "10" | "requesty" => cfg.default_profile = "requesty".to_string(),
             "1" | "openrouter" => cfg.default_profile = "openrouter".to_string(),
             _ => cfg.default_profile = "openrouter".to_string(),
         }

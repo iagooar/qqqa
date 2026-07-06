@@ -157,6 +157,7 @@ The initializer lets you choose the default provider:
   - Need to force a different desktop model? Add `"model_override"` under the provider's `cli` block (supported for both Codex and Claude). That override wins over the profile default but still yields to the per-run `--model` flag.
 - Gemini + `gemini-3-flash-preview` (Google's Gemini via OpenAI-compatible API)
 - Gemini CLI + `gemini-3-flash-preview` (wraps the `gemini` binary; sign in once or set `GEMINI_API_KEY`; buffered output only)
+- Requesty + `openai/gpt-4o-mini` (OpenAI-compatible router at https://requesty.ai)
 
 It also offers to store an API key in the config (optional). If you prefer environment variables, leave it blank and set one of:
 
@@ -165,6 +166,7 @@ It also offers to store an API key in the config (optional). If you prefer envir
 - `OPENAI_API_KEY` for OpenAI
 - `GEMINI_API_KEY` for Gemini (Google AI Studio)
 - `OLLAMA_API_KEY` (optional; any non-empty string works—even `local`—because the Authorization header cannot be blank)
+- `REQUESTY_API_KEY` for Requesty
 - No API key is required for the Codex or Claude CLI profiles—their binaries handle auth (`codex login` / `claude login`). Gemini CLI accepts Google sign-in or `GEMINI_API_KEY`.
 
 Defaults written to `~/.qq/config.json`:
@@ -176,6 +178,7 @@ Defaults written to `~/.qq/config.json`:
   - `ollama` → base `http://127.0.0.1:11434/v1`, env `OLLAMA_API_KEY` (qqqa auto-injects a non-empty placeholder if you leave it unset)
   - `anthropic` → base `https://api.anthropic.com/v1`, env `ANTHROPIC_API_KEY` (present in the config schema for future support; not usable yet)
   - `gemini` → base `https://generativelanguage.googleapis.com/v1beta/openai`, env `GEMINI_API_KEY`
+  - `requesty` → base `https://router.requesty.ai/v1`, env `REQUESTY_API_KEY`
   - `gemini_cli` → mode `cli`, binary `gemini` (install `@google/gemini-cli`; auth via Google sign-in or `GEMINI_API_KEY`)
   - `codex` → mode `cli`, binary `codex` with base args `exec` (install Codex CLI; auth handled by `codex login`). Optional `"model_override"` in the `cli` block forces a fallback ChatGPT model if OpenAI retires the default.
   - `claude_cli` → mode `cli`, binary `claude` (install `@anthropic-ai/claude-code`; auth handled by `claude login`). Optional `"model_override"` pins Claude Code’s `--model` flag without touching your profile’s model.
@@ -187,6 +190,7 @@ Defaults written to `~/.qq/config.json`:
   - `ollama` → model `llama3.1`
   - `anthropic` → model `claude-3-5-sonnet-20241022` (inactive placeholder until Anthropic integration lands)
   - `gemini` → model `gemini-3-flash-preview`
+  - `requesty` → model `openai/gpt-4o-mini`
   - `gemini_cli` → model `gemini-3-flash-preview` (passed to `gemini -m`)
   - `codex` → model label `gpt-5` (only used for display; Codex CLI picks the backing ChatGPT model)
 - Optional per-profile or global `prompt_suffix` text appended to the built-in system prompt (does not replace it). Useful for rules like "assume tools are installed" or "be less chatty".
