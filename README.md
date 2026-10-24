@@ -134,6 +134,15 @@ Download the Windows archive from Releases (choose the architecture that matches
 
 On first run qqqa creates a config file with safe permissions. The default path is `~/.qq/config.json`. If `XDG_CONFIG_HOME` is set and no legacy `~/.qq/config.json` exists, config is stored at `$XDG_CONFIG_HOME/qq/config.json` instead.
 
+The config file holds only your changes. qqqa keeps its defaults (providers, profiles, models) built in and layers the file over them key by key, so new providers and profiles from an update reach you without editing the file. A file from an older release, with every default spelled out, keeps working; the next time qqqa saves it (for example `qq --no-fun`), it is rewritten with only the values that differ from the defaults. For example, this is a complete config:
+
+```json
+{
+  "default_profile": "groq",
+  "profiles": { "groq": { "model": "openai/gpt-oss-120b" } }
+}
+```
+
 For a smooth first interaction, run the init flow:
 
 ```sh
@@ -167,7 +176,7 @@ It also offers to store an API key in the config (optional). If you prefer envir
 - `OLLAMA_API_KEY` (optional; any non-empty string works—even `local`—because the Authorization header cannot be blank)
 - No API key is required for the Codex or Claude CLI profiles—their binaries handle auth (`codex login` / `claude login`). Gemini CLI accepts Google sign-in or `GEMINI_API_KEY`.
 
-Defaults written to `~/.qq/config.json`:
+Built-in defaults (override any of them in `~/.qq/config.json`):
 
 - Providers
   - `openrouter` → base `https://openrouter.ai/api/v1`, env `OPENROUTER_API_KEY`, default headers `HTTP-Referer=https://github.com/iagooar/qqqa` and `X-Title=qqqa`

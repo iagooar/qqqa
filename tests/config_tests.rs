@@ -26,8 +26,7 @@ fn run_init_with_bin(bin: &str, input: &str) -> Config {
     cmd.assert().success();
 
     let config_path = config_dir_for_home(&home_path).join("config.json");
-    let bytes = fs::read(&config_path).expect("config json");
-    serde_json::from_slice(&bytes).expect("parse config")
+    Config::load_from(&config_path).expect("config json")
 }
 
 fn run_qq_init(input: &str) -> Config {
@@ -40,8 +39,7 @@ fn run_qa_init(input: &str) -> Config {
 
 fn read_config_from_home(home: &Path) -> Config {
     let config_path = config_dir_for_home(home).join("config.json");
-    let bytes = fs::read(&config_path).expect("config json");
-    serde_json::from_slice(&bytes).expect("parse config")
+    Config::load_from(&config_path).expect("config json")
 }
 
 #[test]
@@ -488,4 +486,89 @@ fn config_dir_keeps_legacy_when_config_exists() {
     unsafe {
         std::env::remove_var("XDG_CONFIG_HOME");
     }
+}
+
+fn write_json(dir: &Path, value: &serde_json::Value) -> std::path::PathBuf {
+    let path = dir.join("config.json");
+    fs::write(&path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
+    path
+}
+
+fn read_json(path: &Path) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+}
+
+#[test]
+fn minimal_config_file_layers_over_defaults() {
+    let dir = tempdir().unwrap();
+    let path = write_json(dir.path(), &serde_json::json!({"default_profile": "groq"}));
+    let cfg = Config::load_from(&path).unwrap();
+    assert_eq!(cfg.default_profile, "groq");
+    assert!(cfg.profiles.contains_key("gemini"));
+    assert!(cfg.model_providers.contains_key("claude_cli"));
+}
+
+#[test]
+fn config_from_an_older_release_gets_new_profiles() {
+    let dir = tempdir().unwrap();
+    let mut old = serde_json::to_value(Config::default()).unwrap();
+    for key in ["gemini", "gemini_cli"] {
+        old["profiles"].as_object_mut().unwrap().remove(key);
+        old["model_providers"].as_object_mut().unwrap().remove(key);
+    }
+    let path = write_json(dir.path(), &old);
+    let cfg = Config::load_from(&path).unwrap();
+    assert!(cfg.profiles.contains_key("gemini"));
+    assert!(cfg.model_providers.contains_key("gemini_cli"));
+}
+
+#[test]
+fn nested_override_keeps_the_other_defaults() {
+    let dir = tempdir().unwrap();
+    let path = write_json(
+        dir.path(),
+        &serde_json::json!({"profiles": {"openai": {"model": "gpt-x"}}}),
+    );
+    let cfg = Config::load_from(&path).unwrap();
+    let openai = &cfg.profiles["openai"];
+    assert_eq!(openai.model, "gpt-x");
+    assert_eq!(openai.model_provider, "openai");
+    assert_eq!(cfg.default_profile, "openrouter");
+}
+
+#[test]
+fn save_writes_only_what_differs_from_defaults() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let mut cfg = Config::default();
+    cfg.set_copy_first_command(true);
+    cfg.profiles.get_mut("openai").unwrap().model = "gpt-x".into();
+    cfg.save(&path, false).unwrap();
+    assert_eq!(
+        read_json(&path),
+        serde_json::json!({
+            "default_profile": "openrouter",
+            "copy_first_command": true,
+            "profiles": {"openai": {"model": "gpt-x"}}
+        })
+    );
+    cfg.set_copy_first_command(false);
+    cfg.save(&path, false).unwrap();
+    assert!(read_json(&path).get("copy_first_command").is_none());
+    let back = Config::load_from(&path).unwrap();
+    assert_eq!(back.profiles["openai"].model, "gpt-x");
+}
+
+#[test]
+fn saving_a_full_old_config_keeps_only_overrides() {
+    let dir = tempdir().unwrap();
+    let mut old = serde_json::to_value(Config::default()).unwrap();
+    old["include_history"] = serde_json::json!(true);
+    let path = write_json(dir.path(), &old);
+    let cfg = Config::load_from(&path).unwrap();
+    cfg.save(&path, false).unwrap();
+    assert_eq!(
+        read_json(&path),
+        serde_json::json!({"default_profile": "openrouter", "include_history": true})
+    );
 }

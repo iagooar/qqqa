@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use fs_err as fs;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -485,7 +486,80 @@ impl EffectiveProfile {
     }
 }
 
+/// Merge `over` into `base`: objects merge key by key; any other value replaces.
+fn merge_json(base: &mut Value, over: Value) {
+    match (base, over) {
+        (Value::Object(base), Value::Object(over)) => {
+            for (key, value) in over {
+                match base.get_mut(&key) {
+                    Some(slot) => merge_json(slot, value),
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, over) => *base = over,
+    }
+}
+
+/// The parts of `current` that differ from `defaults`. Objects are compared
+/// key by key; other values are kept whole when they differ.
+fn json_overrides(current: &Value, defaults: &Value) -> Option<Value> {
+    match current {
+        Value::Object(map) => {
+            let empty = serde_json::Map::new();
+            let defaults = defaults.as_object().unwrap_or(&empty);
+            let out: serde_json::Map<String, Value> = map
+                .iter()
+                .filter_map(|(key, value)| {
+                    let default = defaults.get(key).unwrap_or(&Value::Null);
+                    json_overrides(value, default).map(|v| (key.clone(), v))
+                })
+                .collect();
+            (!out.is_empty()).then_some(Value::Object(out))
+        }
+        _ if current == defaults => None,
+        _ => Some(current.clone()),
+    }
+}
+
 impl Config {
+    /// Build a config from the JSON in a config file, layered over the
+    /// built-in defaults. The file holds only what the user changed; a file
+    /// written by an older release (all defaults spelled out) also works.
+    pub fn from_overrides(overrides: Value) -> Result<Self> {
+        let mut merged = serde_json::to_value(Config::default())?;
+        merge_json(&mut merged, overrides);
+        Ok(serde_json::from_value(merged)?)
+    }
+
+    /// The JSON to write to the config file: only what differs from the
+    /// built-in defaults, plus `default_profile` so the file shows where to start.
+    pub fn to_overrides(&self) -> Result<Value> {
+        let current = serde_json::to_value(self)?;
+        let defaults = serde_json::to_value(Config::default())?;
+        let mut out = json_overrides(&current, &defaults)
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        if let Value::Object(map) = &mut out {
+            map.insert(
+                "default_profile".to_string(),
+                Value::String(self.default_profile.clone()),
+            );
+        }
+        Ok(out)
+    }
+
+    /// Read and layer the config file at `path`.
+    pub fn load_from(path: &Path) -> Result<Self> {
+        let bytes =
+            fs::read(path).with_context(|| format!("Reading config: {}", path.display()))?;
+        let overrides: Value = serde_json::from_slice(&bytes)
+            .with_context(|| format!("Parsing config JSON: {}", path.display()))?;
+        Config::from_overrides(overrides)
+            .with_context(|| format!("Invalid config: {}", path.display()))
+    }
+
     /// Load config from disk or create a default one on first run.
     pub fn load_or_init(debug: bool) -> Result<(Self, PathBuf)> {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
@@ -499,25 +573,20 @@ impl Config {
         }
 
         if path.exists() {
-            let bytes =
-                fs::read(&path).with_context(|| format!("Reading config: {}", path.display()))?;
-            let cfg: Config =
-                serde_json::from_slice(&bytes).with_context(|| "Parsing config JSON")?;
+            let cfg = Config::load_from(&path)?;
             set_permissions_file(&path, debug).ok();
             Ok((cfg, path))
         } else {
             let cfg = Config::default();
-            let json = serde_json::to_vec_pretty(&cfg).unwrap();
-            fs::write(&path, json)
-                .with_context(|| format!("Writing default config: {}", path.display()))?;
-            set_permissions_file(&path, debug).ok();
+            cfg.save(&path, debug)?;
             Ok((cfg, path))
         }
     }
 
-    /// Save config back to the given path with pretty JSON and safe permissions.
+    /// Save the user's overrides (see [`Config::to_overrides`]) with safe permissions.
     pub fn save(&self, path: &Path, debug: bool) -> Result<()> {
-        let json = serde_json::to_vec_pretty(self).with_context(|| "Serializing config JSON")?;
+        let json = serde_json::to_vec_pretty(&self.to_overrides()?)
+            .with_context(|| "Serializing config JSON")?;
         fs::write(path, json).with_context(|| format!("Writing config: {}", path.display()))?;
         set_permissions_file(path, debug).ok();
         Ok(())
@@ -901,9 +970,7 @@ impl Config {
         let copy_enabled = matches!(copy_choice.as_str(), "y" | "yes");
         cfg.set_copy_first_command(copy_enabled);
 
-        let json = serde_json::to_vec_pretty(&cfg)?;
-        fs::write(&path, json).with_context(|| format!("Writing config: {}", path.display()))?;
-        set_permissions_file(&path, debug).ok();
+        cfg.save(&path, debug)?;
         println!(
             "\nWrote {} with default profile '{}'.",
             path.display(),
