@@ -118,6 +118,10 @@ fn ensure_safe_command_respects_custom_allowlist() {
 
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn ensure_safe_path_allows_workspace_children() {
     let temp = tempfile::tempdir().unwrap();
     unsafe {
@@ -133,6 +137,10 @@ fn ensure_safe_path_allows_workspace_children() {
 
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn ensure_safe_path_blocks_traversal_outside_home() {
     let temp = tempfile::tempdir().unwrap();
     unsafe {
@@ -149,6 +157,10 @@ fn ensure_safe_path_blocks_traversal_outside_home() {
 #[cfg(unix)]
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn ensure_safe_path_blocks_symlink_escape() {
     use std::os::unix::fs::symlink;
 

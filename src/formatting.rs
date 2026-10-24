@@ -11,13 +11,16 @@ static COLOR_OUTPUT_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// Write to stdout and flush. When stdout is a closed pipe (`qq ... | head`),
 /// end the process quietly with status 0, as other filters do, instead of the
-/// panic that `print!` gives.
+/// panic that `print!` gives. Any other write error (a full disk, `/dev/full`)
+/// means the answer was not delivered: report it and exit with status 1.
 pub fn write_stdout(text: &str) {
     let mut out = std::io::stdout().lock();
-    if let Err(err) = out.write_all(text.as_bytes()).and_then(|()| out.flush())
-        && err.kind() == std::io::ErrorKind::BrokenPipe
-    {
-        std::process::exit(0);
+    if let Err(err) = out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        if err.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        eprintln!("Error: failed to write output: {err}");
+        std::process::exit(1);
     }
 }
 

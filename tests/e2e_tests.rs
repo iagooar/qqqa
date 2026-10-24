@@ -1,5 +1,8 @@
 //! End-to-end runs of the real `qq` and `qa` binaries against a mock
 //! OpenAI-compatible server, with a temporary HOME.
+//! Unix only: on Windows `dirs::home_dir` ignores HOME, so the binaries would
+//! read and write the real user profile.
+#![cfg(unix)]
 use assert_cmd::cargo::cargo_bin_cmd;
 use httpmock::Method::POST;
 use httpmock::MockServer;
@@ -265,4 +268,32 @@ fn qa_fails_when_tool_call_is_truncated() {
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("output limit"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn qq_reports_other_stdout_write_errors() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let server = MockServer::start();
+    mock_reply(&server, "text/event-stream", &sse(&["answer"]));
+    let home = tempdir().unwrap();
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let out = Command::new(assert_cmd::cargo::cargo_bin!("qq"))
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", "")
+        .env("OPENROUTER_API_KEY", "test")
+        .current_dir(home.path())
+        .args(["-n", "-r", "--api-base", &server.base_url(), "x"])
+        .stdin(Stdio::null())
+        .stdout(full)
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("failed to write output"));
 }

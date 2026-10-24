@@ -42,7 +42,7 @@ pub async fn run(
     mut on_chunk: Option<&mut dyn for<'chunk> FnMut(StreamChunk<'chunk>)>,
 ) -> Result<String> {
     let cwd = args.cwd.as_deref().unwrap_or(".");
-    eprintln!("Proposed command: {}", &args.command);
+    eprintln!("Proposed command: {}", args.command);
     eprintln!("Working directory: {}", cwd);
 
     let disposition = match ensure_safe_command(&args.command) {

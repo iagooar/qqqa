@@ -5,6 +5,10 @@ use serial_test::serial;
 
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn history_reader_prefers_existing_files_and_limits() {
     let dir = tempfile::tempdir().unwrap();
     unsafe {

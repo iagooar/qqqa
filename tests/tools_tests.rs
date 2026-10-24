@@ -71,6 +71,10 @@ impl Drop for EnvVarGuard {
 
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn read_and_write_file_tools_and_path_safety() {
     // Set HOME and CWD to a temp folder for deterministic safety checks.
     let temp = tempfile::tempdir().unwrap();
@@ -145,6 +149,10 @@ fn parse_tool_call_valid_and_invalid() {
 #[cfg(unix)]
 #[tokio::test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 async fn execute_command_runs_and_captures_output() {
     let temp = tempfile::tempdir().unwrap();
     unsafe {
@@ -171,6 +179,10 @@ async fn execute_command_runs_and_captures_output() {
 #[cfg(unix)]
 #[tokio::test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 async fn execute_command_honors_pty_force_flag() {
     let temp = tempfile::tempdir().unwrap();
     unsafe {
@@ -222,6 +234,10 @@ async fn execute_command_honors_pty_force_flag() {
 #[cfg(unix)]
 #[tokio::test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 async fn execute_command_respects_disable_flag() {
     let temp = tempfile::tempdir().unwrap();
     unsafe {
@@ -272,6 +288,10 @@ async fn execute_command_respects_disable_flag() {
 
 #[cfg(unix)]
 #[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 async fn execute_command_streams_stdout_chunks() {
     let temp = tempfile::tempdir().unwrap();
     unsafe {
