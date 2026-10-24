@@ -17,7 +17,6 @@ fs-err = "2.11"
 rustls-pemfile = "2.1"
 chrono = { version = "0.4", features = ["clock"] }
 os_info = "3.7"
-atty = "0.2"
 futures-util = "0.3"
 bytes = "1.6"
 nu-ansi-term = "0.50"

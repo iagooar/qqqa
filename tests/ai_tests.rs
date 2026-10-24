@@ -119,7 +119,7 @@ async fn chat_once_uses_legacy_parameters_for_old_models() {
                     serde_json::from_slice(body).expect("request body should be valid JSON");
                 assert_eq!(
                     payload.get("max_tokens").and_then(|v| v.as_u64()),
-                    Some(800)
+                    Some(4096)
                 );
                 assert!(payload.get("max_completion_tokens").is_none());
                 let temp = payload

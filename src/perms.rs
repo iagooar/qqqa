@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 /// Cap read_file size to 1 MiB
-pub const READ_FILE_MAX_BYTES: usize = 1 * 1024 * 1024;
+pub const READ_FILE_MAX_BYTES: usize = 1024 * 1024;
 
 const SAFE_COMMANDS: &[&str] = &[
     "awk", "cat", "cut", "df", "du", "env", "echo", "find", "grep", "head", "ls", "pwd", "rg",
@@ -146,7 +146,7 @@ pub fn ensure_safe_command(cmd: &str) -> Result<CommandDisposition> {
 
 fn allow_unsafe_commands() -> bool {
     std::env::var("QQQA_ALLOW_UNSAFE_COMMANDS")
-        .map(|v| !v.trim().is_empty() && v != "0" && v.to_ascii_lowercase() != "false")
+        .map(|v| !v.trim().is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
         .unwrap_or(false)
 }
 
@@ -251,11 +251,11 @@ fn split_command_segments(cmd: &str) -> Vec<String> {
             '|' | '&' | ';' if !in_single && !in_double => {
                 let op_char = ch;
                 let mut op_end = idx + ch.len_utf8();
-                if let Some(&(_, next_ch)) = chars.peek() {
-                    if next_ch == op_char {
-                        chars.next();
-                        op_end += next_ch.len_utf8();
-                    }
+                if let Some(&(_, next_ch)) = chars.peek()
+                    && next_ch == op_char
+                {
+                    chars.next();
+                    op_end += next_ch.len_utf8();
                 }
                 if idx >= start {
                     segments.push(cmd[start..idx].to_string());

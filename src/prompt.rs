@@ -14,20 +14,20 @@ pub struct PromptInputs {
 /// - Otherwise, a non-empty piped block becomes the question/task and is NOT
 ///   echoed as separate context to avoid duplication.
 pub fn coalesce_prompt_inputs(args_question: String, stdin_block: Option<String>) -> PromptInputs {
-    if args_question.trim().is_empty() {
-        if let Some(block) = stdin_block {
-            let trimmed = block.trim();
-            if !trimmed.is_empty() {
-                return PromptInputs {
-                    question: trimmed.to_string(),
-                    stdin_block: None,
-                };
-            }
+    if args_question.trim().is_empty()
+        && let Some(block) = stdin_block
+    {
+        let trimmed = block.trim();
+        if !trimmed.is_empty() {
             return PromptInputs {
-                question: args_question,
-                stdin_block: Some(block),
+                question: trimmed.to_string(),
+                stdin_block: None,
             };
         }
+        return PromptInputs {
+            question: args_question,
+            stdin_block: Some(block),
+        };
     }
 
     PromptInputs {
@@ -74,15 +74,15 @@ pub fn build_qq_prompt(
         out.push('\n');
     }
 
-    if let Some(block) = stdin_block {
-        if !block.trim().is_empty() {
-            out.push_str("Input from pipe:\n");
-            out.push_str(block);
-            if !block.ends_with('\n') {
-                out.push('\n');
-            }
+    if let Some(block) = stdin_block
+        && !block.trim().is_empty()
+    {
+        out.push_str("Input from pipe:\n");
+        out.push_str(block);
+        if !block.ends_with('\n') {
             out.push('\n');
         }
+        out.push('\n');
     }
 
     out.push_str("Question: ");
@@ -169,15 +169,15 @@ pub fn build_qq_user_message(
         out.push_str("]\n\n");
     }
 
-    if let Some(block) = stdin_block {
-        if !block.trim().is_empty() {
-            out.push_str("[Input from pipe:\n");
-            out.push_str(block);
-            if !block.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str("]\n\n");
+    if let Some(block) = stdin_block
+        && !block.trim().is_empty()
+    {
+        out.push_str("[Input from pipe:\n");
+        out.push_str(block);
+        if !block.ends_with('\n') {
+            out.push('\n');
         }
+        out.push_str("]\n\n");
     }
 
     out.push_str("Question: ");
@@ -190,6 +190,7 @@ pub fn build_qq_user_message(
 /// - Return a normal helpful answer as plain text, or
 /// - Return ONLY a JSON object of the form:
 ///   { "tool": "read_file"|"write_file"|"execute_command", "arguments": { ... } }
+///
 /// The CLI enforces a single tool call and will not loop.
 pub fn build_qa_system_prompt() -> String {
     let mut s = String::new();

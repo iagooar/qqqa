@@ -10,13 +10,26 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  lint:
     runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Check formatting
+      run: cargo fmt --all --check
+    - name: Clippy
+      run: cargo clippy --locked --all-targets -- -D warnings
 
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # Windows has not run the suite before; keep it visible without blocking until it is green.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     steps:
     - uses: actions/checkout@v4
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --locked --verbose
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --locked --verbose

@@ -1,9 +1,8 @@
 use crate::perms::{CommandDisposition, ensure_safe_command};
 use crate::shell::ShellKind;
 use anyhow::{Context, Result, anyhow};
-use atty::Stream;
 use serde::Deserialize;
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
@@ -43,7 +42,7 @@ pub async fn run(
     mut on_chunk: Option<&mut dyn for<'chunk> FnMut(StreamChunk<'chunk>)>,
 ) -> Result<String> {
     let cwd = args.cwd.as_deref().unwrap_or(".");
-    eprintln!("Proposed command: {}", &args.command);
+    eprintln!("Proposed command: {}", args.command);
     eprintln!("Working directory: {}", cwd);
 
     let disposition = match ensure_safe_command(&args.command) {
@@ -78,10 +77,8 @@ pub async fn run(
             }
         }
     }
-    if requires_manual_confirmation || !auto_yes {
-        if !prompt_yes_no("Execute? [y/N]: ")? {
-            return Err(anyhow!("Execution canceled by user"));
-        }
+    if (requires_manual_confirmation || !auto_yes) && !prompt_yes_no("Execute? [y/N]: ")? {
+        return Err(anyhow!("Execution canceled by user"));
     }
 
     let child = spawn_child(&args.command, cwd, shell, debug)?;
@@ -435,7 +432,7 @@ fn should_use_pty() -> bool {
             .map(|v| v.to_lowercase()),
         Some(ref v) if v == "1" || v == "true" || v == "yes"
     );
-    force || (!disable && atty::is(Stream::Stdout))
+    force || (!disable && io::stdout().is_terminal())
 }
 
 #[cfg(not(unix))]
@@ -446,14 +443,14 @@ fn should_use_pty() -> bool {
             .map(|v| v.to_lowercase()),
         Some(ref v) if v == "1" || v == "true" || v == "yes"
     );
-    force && atty::is(Stream::Stdout)
+    force && io::stdout().is_terminal()
 }
 
 fn prompt_yes_no(prompt: &str) -> Result<bool> {
     eprint!("{}", prompt);
     io::stderr().flush().ok();
 
-    if atty::is(Stream::Stdin) {
+    if io::stdin().is_terminal() {
         let mut line = String::new();
         io::stdin().read_line(&mut line)?;
         return Ok(is_yes(&line));

@@ -10,7 +10,7 @@ use qqqa::perms;
 use qqqa::prompt::{build_qa_system_prompt, build_qa_user_message, coalesce_prompt_inputs};
 use qqqa::shell::{ShellKind, detect_shell, shell_hint_for_prompt};
 use qqqa::tools::{ToolCall, parse_tool_call};
-use std::io::{Read, Stdin, Write};
+use std::io::{IsTerminal, Read, Stdin, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
             }
             Err(e) => match e.downcast::<InitExistsError>() {
                 Ok(init_err) => {
-                    println!(
+                    qqqa::outln!(
                         "Keeping your existing config at {}.\nMove or remove that file if you want to rerun --init.",
                         init_err.path.display()
                     );
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     }
 
     // Handle stdin piping for extra context.
-    let stdin_is_tty = atty::is(atty::Stream::Stdin);
+    let stdin_is_tty = std::io::stdin().is_terminal();
     let stdin_block = if !stdin_is_tty {
         Some(read_all_stdin(std::io::stdin())?)
     } else {
@@ -204,7 +204,8 @@ async fn main() -> Result<()> {
                 conn.request_timeout_secs.map(Duration::from_secs),
             )?
             .with_reasoning_effort(eff.reasoning_effort.clone())
-            .with_temperature(eff.temperature, eff.temperature.is_some()),
+            .with_temperature(eff.temperature, eff.temperature.is_some())
+            .with_max_tokens(eff.max_tokens, eff.reasoning_max_tokens),
         ),
         ProviderConnection::Cli(_) => None,
     };
@@ -321,7 +322,7 @@ async fn main() -> Result<()> {
             )
             .await?;
             if !handled {
-                println!("Unknown tool call: {}", name);
+                qqqa::outln!("Unknown tool call: {}", name);
             }
         }
         AssistantReply::Content(assistant) => {
@@ -349,7 +350,7 @@ async fn main() -> Result<()> {
                     },
                 },
                 Err(_) => {
-                    println!("{}", assistant.trim_end());
+                    qqqa::outln!("{}", assistant.trim_end());
                 }
             }
         }
@@ -392,20 +393,12 @@ async fn run_execute_command_with_allowlist(
                 let _ = handle.flush();
             }
         };
-        let mut on_chunk: Option<
+        let on_chunk: Option<
             &mut dyn for<'chunk> FnMut(qqqa::tools::execute_command::StreamChunk<'chunk>),
         > = Some(&mut stream_printer);
         let streaming_enabled = on_chunk.is_some();
         let exec_args = sanitize_execute_args(original_args.clone(), &base_dir, debug);
-        match qqqa::tools::execute_command::run(
-            exec_args,
-            auto_yes,
-            debug,
-            shell,
-            on_chunk.as_deref_mut(),
-        )
-        .await
-        {
+        match qqqa::tools::execute_command::run(exec_args, auto_yes, debug, shell, on_chunk).await {
             Ok(summary) => {
                 return Ok(ExecuteCommandResult {
                     summary,
@@ -417,7 +410,7 @@ async fn run_execute_command_with_allowlist(
                     .downcast_ref::<perms::CommandNotAllowedError>()
                     .map(|e| e.program.clone())
                 {
-                    if !atty::is(atty::Stream::Stdin) {
+                    if !std::io::stdin().is_terminal() {
                         return Err(err);
                     }
                     if prompt_add_command_to_allowlist(&program)? {
@@ -500,10 +493,10 @@ fn sanitize_cwd_path(requested: Option<&str>, base_dir: &Path) -> (PathBuf, bool
     }
     let path = Path::new(trimmed);
     if path.is_absolute() {
-        if let Ok(canon) = std::fs::canonicalize(path) {
-            if canon.starts_with(base_dir) {
-                return (canon, false);
-            }
+        if let Ok(canon) = std::fs::canonicalize(path)
+            && canon.starts_with(base_dir)
+        {
+            return (canon, false);
         }
         return (base, true);
     }
@@ -598,12 +591,12 @@ async fn execute_tool_call(
 }
 
 fn print_tool_result(tool: &str, result: &str) {
-    println!("[tool:{}]", tool);
-    println!("{}", result.trim_end());
+    qqqa::outln!("[tool:{}]", tool);
+    qqqa::outln!("{}", result.trim_end());
 }
 
 fn print_tool_error(tool: &str, err: &str) {
-    println!("[tool:{}:error] {}", tool, err);
+    qqqa::outln!("[tool:{}:error] {}", tool, err);
 }
 
 fn normalize_tool_arguments(raw: &str) -> Result<String> {

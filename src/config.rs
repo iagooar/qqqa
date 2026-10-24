@@ -24,15 +24,11 @@ impl std::error::Error for InitExistsError {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ProviderMode {
+    #[default]
     Http,
     Cli,
-}
-
-impl Default for ProviderMode {
-    fn default() -> Self {
-        ProviderMode::Http
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,6 +108,13 @@ pub struct Profile {
     /// Optional text appended to the built-in system prompt for this profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_suffix: Option<String>,
+    /// Optional output cap (tokens) for ordinary models. Default 4096.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// Optional output cap (tokens) for reasoning models; reasoning tokens count
+    /// against it. Falls back to `max_tokens`, then to 16384.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +303,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -311,6 +316,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -322,6 +329,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -333,6 +342,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -344,6 +355,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -355,6 +368,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -366,6 +381,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -377,6 +394,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -388,6 +407,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
 
@@ -437,6 +458,8 @@ pub struct EffectiveProfile {
     pub reasoning_effort: Option<String>,
     pub temperature: Option<f32>,
     pub prompt_suffix: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub reasoning_max_tokens: Option<u32>,
 }
 
 impl EffectiveProfile {
@@ -604,17 +627,16 @@ impl Config {
         let mut model = user_model_override
             .clone()
             .unwrap_or_else(|| profile.model.clone());
-        if user_model_override.is_none() && matches!(effective_mode, ProviderMode::Cli) {
-            if let Some(cli) = provider.cli.as_ref() {
-                if let Some(override_model) = cli
-                    .model_override
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|m| !m.is_empty())
-                {
-                    model = override_model.to_string();
-                }
-            }
+        if user_model_override.is_none()
+            && matches!(effective_mode, ProviderMode::Cli)
+            && let Some(cli) = provider.cli.as_ref()
+            && let Some(override_model) = cli
+                .model_override
+                .as_deref()
+                .map(str::trim)
+                .filter(|m| !m.is_empty())
+        {
+            model = override_model.to_string();
         }
 
         let connection = match effective_mode {
@@ -663,7 +685,7 @@ impl Config {
                     .as_ref()
                     .ok_or_else(|| anyhow!("Provider '{}' missing cli settings", provider_key))?;
                 ProviderConnection::Cli(CliConnection {
-                    engine: cli.engine.clone(),
+                    engine: cli.engine,
                     binary: cli.binary.clone(),
                     base_args: cli.base_args.clone(),
                     request_timeout_secs,
@@ -682,6 +704,8 @@ impl Config {
                 .clone()
                 .or_else(|| self.prompt_suffix.clone())
                 .filter(|suffix| !suffix.trim().is_empty()),
+            max_tokens: profile.max_tokens,
+            reasoning_max_tokens: profile.reasoning_max_tokens,
         })
     }
 
@@ -720,7 +744,9 @@ impl Config {
         println!(
             "  [7] Claude Code CLI — use the local `claude` binary (Claude desktop / npm package)"
         );
-        println!("  [8] Gemini — gemini-3-flash-preview (Google's Gemini via OpenAI-compatible API)");
+        println!(
+            "  [8] Gemini — gemini-3-flash-preview (Google's Gemini via OpenAI-compatible API)"
+        );
         println!(
             "  [9] Gemini CLI — use the local `gemini` binary (Google sign-in or GEMINI_API_KEY)"
         );
@@ -796,10 +822,10 @@ impl Config {
                 let mut base_in = String::new();
                 io::stdin().read_line(&mut base_in).ok();
                 let base_in = base_in.trim();
-                if !base_in.is_empty() {
-                    if let Some(mp) = cfg.model_providers.get_mut(&provider_key) {
-                        mp.base_url = base_in.to_string();
-                    }
+                if !base_in.is_empty()
+                    && let Some(mp) = cfg.model_providers.get_mut(&provider_key)
+                {
+                    mp.base_url = base_in.to_string();
                 }
             }
         } else {
@@ -926,10 +952,9 @@ impl ProviderTlsConfig {
             return Ok(None);
         };
 
-        let resolved = if path.is_absolute() || config_dir.is_none() {
-            path
-        } else {
-            config_dir.unwrap().join(path)
+        let resolved = match config_dir {
+            Some(dir) if !path.is_absolute() => dir.join(path),
+            _ => path,
         };
 
         Ok(Some(ResolvedTlsConfig {
@@ -951,6 +976,28 @@ fn provider_default_headers(provider_key: &str) -> HashMap<String, String> {
         }
         _ => HashMap::new(),
     }
+}
+
+fn set_permissions_dir(path: &Path, _debug: bool) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o700);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
+fn set_permissions_file(path: &Path, _debug: bool) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -996,26 +1043,4 @@ mod tests {
             std::env::remove_var(key);
         }
     }
-}
-
-fn set_permissions_dir(path: &Path, _debug: bool) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(path)?.permissions();
-        perms.set_mode(0o700);
-        fs::set_permissions(path, perms)?;
-    }
-    Ok(())
-}
-
-fn set_permissions_file(path: &Path, _debug: bool) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(path)?.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(path, perms)?;
-    }
-    Ok(())
 }

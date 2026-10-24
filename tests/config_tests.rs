@@ -1,6 +1,6 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use fs_err as fs;
-use qqqa::config::{config_dir_for_home, Config, ProviderConnection};
+use qqqa::config::{Config, ProviderConnection, config_dir_for_home};
 use serial_test::serial;
 use std::path::Path;
 use tempfile::tempdir;
@@ -98,7 +98,9 @@ fn claude_cli_profile_resolves_to_cli_backend() {
 #[test]
 #[serial]
 fn gemini_profile_resolves_to_http_backend() {
-    unsafe { std::env::set_var("GEMINI_API_KEY", "test-gemini-key"); }
+    unsafe {
+        std::env::set_var("GEMINI_API_KEY", "test-gemini-key");
+    }
     let cfg = Config::default();
     let eff = cfg
         .resolve_profile(Some("gemini"), None, None)
@@ -111,16 +113,18 @@ fn gemini_profile_resolves_to_http_backend() {
         }
         _ => panic!("gemini should resolve to HTTP connection"),
     }
-    unsafe { std::env::remove_var("GEMINI_API_KEY"); }
+    unsafe {
+        std::env::remove_var("GEMINI_API_KEY");
+    }
 }
 
 #[test]
 fn cli_model_override_forces_model_when_set() {
     let mut cfg = Config::default();
-    if let Some(provider) = cfg.model_providers.get_mut("claude_cli") {
-        if let Some(cli) = provider.cli.as_mut() {
-            cli.model_override = Some("claude-custom".to_string());
-        }
+    if let Some(provider) = cfg.model_providers.get_mut("claude_cli")
+        && let Some(cli) = provider.cli.as_mut()
+    {
+        cli.model_override = Some("claude-custom".to_string());
     }
 
     let eff = cfg
@@ -239,6 +243,10 @@ fn cli_mode_does_not_require_base_url() {
 
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn init_defaults_to_openrouter_profile_and_keeps_history_off() {
     let cfg = run_qq_init("\n\nn\n");
     assert_eq!(cfg.default_profile, "openrouter");
@@ -247,6 +255,10 @@ fn init_defaults_to_openrouter_profile_and_keeps_history_off() {
 
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn init_allows_custom_local_base_url() {
     let custom_base = "http://127.0.0.1:1234/v1";
     let input = format!("5\n\n{}\nn\n", custom_base);
@@ -261,6 +273,10 @@ fn init_allows_custom_local_base_url() {
 
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn qa_init_defaults_to_openrouter_profile() {
     let cfg = run_qa_init("\n\nn\n");
     assert_eq!(cfg.default_profile, "openrouter");
@@ -269,6 +285,10 @@ fn qa_init_defaults_to_openrouter_profile() {
 
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn qa_init_can_select_openai_without_affecting_others() {
     let cfg = run_qa_init("3\n\nn\n");
     assert_eq!(cfg.default_profile, "openai");
@@ -281,6 +301,10 @@ fn qa_init_can_select_openai_without_affecting_others() {
 
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn ollama_init_does_not_mutate_remote_providers() {
     let custom_base = "http://127.0.0.1:4321/v1";
     let input = format!("5\n\n{}\nn\n", custom_base);
@@ -316,6 +340,10 @@ fn config_copy_first_command_defaults_false_and_is_toggleable() {
 
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn qq_init_can_enable_auto_copy_flag() {
     // Select default profile, skip API key, decline history, enable auto-copy.
     let cfg = run_qq_init("\n\nn\ny\n");
@@ -325,6 +353,10 @@ fn qq_init_can_enable_auto_copy_flag() {
 
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn qq_enable_auto_copy_flag_persists_without_question() {
     let home = tempdir().expect("temp dir");
     let home_path = home.path().to_path_buf();
@@ -345,6 +377,10 @@ fn qq_enable_auto_copy_flag_persists_without_question() {
 
 #[test]
 #[serial]
+#[cfg_attr(
+    windows,
+    ignore = "dirs::home_dir ignores HOME on Windows, so the temp home is not used"
+)]
 fn qq_disable_auto_copy_flag_persists_without_question() {
     let home = tempdir().expect("temp dir");
     let home_path = home.path().to_path_buf();
@@ -393,12 +429,15 @@ fn gemini_cli_profile_resolves_to_cli_backend() {
 
 #[test]
 fn profile_prompt_suffix_overrides_global_suffix() {
-    let mut cfg = Config::default();
-    cfg.prompt_suffix = Some("global suffix".to_string());
+    let mut cfg = Config {
+        prompt_suffix: Some("global suffix".to_string()),
+        ..Default::default()
+    };
     cfg.profiles
         .get_mut("openrouter")
         .expect("openrouter profile")
         .prompt_suffix = Some("profile suffix".to_string());
+    cfg.model_providers.get_mut("openrouter").unwrap().api_key = Some("test".into());
     let eff = cfg
         .resolve_profile(Some("openrouter"), None, None)
         .expect("profile resolves");
@@ -407,8 +446,11 @@ fn profile_prompt_suffix_overrides_global_suffix() {
 
 #[test]
 fn global_prompt_suffix_applies_when_profile_has_none() {
-    let mut cfg = Config::default();
-    cfg.prompt_suffix = Some("global suffix".to_string());
+    let mut cfg = Config {
+        prompt_suffix: Some("global suffix".to_string()),
+        ..Default::default()
+    };
+    cfg.model_providers.get_mut("openrouter").unwrap().api_key = Some("test".into());
     let eff = cfg
         .resolve_profile(Some("openrouter"), None, None)
         .expect("profile resolves");
@@ -431,6 +473,7 @@ fn config_dir_uses_xdg_when_legacy_missing() {
 }
 
 #[test]
+#[serial]
 fn config_dir_keeps_legacy_when_config_exists() {
     let home = tempdir().expect("temp home");
     let xdg = tempdir().expect("temp xdg");

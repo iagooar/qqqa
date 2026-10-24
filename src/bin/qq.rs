@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser};
 use qqqa::ai::{
-    ChatClient, CliCompletionRequest, DEFAULT_REQUEST_TIMEOUT_SECS, Msg, run_cli_completion,
-    run_cli_completion_streaming,
+    ChatClient, CliCompletionRequest, DEFAULT_REQUEST_TIMEOUT_SECS, Msg, is_truncated,
+    run_cli_completion, run_cli_completion_streaming, truncation_error,
 };
 use qqqa::clipboard;
 use qqqa::config::{Config, InitExistsError, ProviderConnection};
@@ -14,7 +14,7 @@ use qqqa::history::read_recent_history;
 use qqqa::prompt::{build_qq_system_prompt, build_qq_user_message, coalesce_prompt_inputs};
 use qqqa::shell::{detect_shell, shell_hint_for_prompt};
 use std::ffi::OsString;
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
 use std::io::{Read, Stdin};
 use std::time::Duration;
 
@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
             }
             Err(e) => match e.downcast::<InitExistsError>() {
                 Ok(init_err) => {
-                    println!(
+                    qqqa::outln!(
                         "Keeping your existing config at {}.\nMove or remove that file if you want to rerun --init.",
                         init_err.path.display()
                     );
@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
     }
 
     // Detect piped stdin and read it if present.
-    let stdin_is_tty = atty::is(atty::Stream::Stdin);
+    let stdin_is_tty = std::io::stdin().is_terminal();
     let stdin_block = if !stdin_is_tty {
         Some(read_all_stdin(std::io::stdin())?)
     } else {
@@ -255,7 +255,8 @@ async fn main() -> Result<()> {
                 conn.request_timeout_secs.map(Duration::from_secs),
             )?
             .with_reasoning_effort(eff.reasoning_effort.clone())
-            .with_temperature(eff.temperature, eff.temperature.is_some()),
+            .with_temperature(eff.temperature, eff.temperature.is_some())
+            .with_max_tokens(eff.max_tokens, eff.reasoning_max_tokens),
         ),
         ProviderConnection::Cli(_) => None,
     };
@@ -275,22 +276,28 @@ async fn main() -> Result<()> {
         (ProviderConnection::Http(_), Some(client)) => {
             if !cli.no_stream {
                 if cli.raw {
-                    println!("");
+                    qqqa::outln!();
                     let mut raw_buffer = String::new();
-                    client
+                    let summary = client
                         .chat_stream_messages(&eff.model, &messages, cli.debug, |tok| {
                             raw_buffer.push_str(tok);
                             print_stream_token(tok);
                         })
                         .await?;
-                    println!();
+                    qqqa::outln!();
+                    check_answer(
+                        &raw_buffer,
+                        summary.finish_reason.as_deref(),
+                        client,
+                        &eff.model,
+                    )?;
                     maybe_copy_first_command(&raw_buffer, copy_enabled, cli.raw, cli.debug);
                 } else {
-                    println!("");
+                    qqqa::outln!();
                     let mut buf = String::new();
                     let mut formatter = StreamingFormatter::new();
                     let mut writer = PrettyStreamWriter::new();
-                    client
+                    let summary = client
                         .chat_stream_messages(&eff.model, &messages, cli.debug, |tok| {
                             buf.push_str(tok);
                             if let Some(delta) = formatter.push(tok) {
@@ -298,22 +305,29 @@ async fn main() -> Result<()> {
                             }
                         })
                         .await?;
-                    if let Some(tail) = formatter.flush() {
-                        if !tail.is_empty() {
-                            writer.write(&tail);
-                        }
+                    if let Some(tail) = formatter.flush()
+                        && !tail.is_empty()
+                    {
+                        writer.write(&tail);
                     }
-                    println!("");
+                    qqqa::outln!();
+                    check_answer(&buf, summary.finish_reason.as_deref(), client, &eff.model)?;
                     maybe_copy_first_command(&buf, copy_enabled, cli.raw, cli.debug);
                 }
             } else {
                 let loading = start_loading_animation();
-                let full = client
-                    .chat_once_messages(&eff.model, &messages, cli.debug)
-                    .await?;
+                let completion = client.complete(&eff.model, &messages, cli.debug).await;
                 drop(loading);
-                println!("");
+                let completion = completion?;
+                let full = completion.content;
+                qqqa::outln!();
                 print_assistant_text(&full, cli.raw);
+                check_answer(
+                    &full,
+                    completion.finish_reason.as_deref(),
+                    client,
+                    &eff.model,
+                )?;
                 maybe_copy_first_command(&full, copy_enabled, cli.raw, cli.debug);
             }
         }
@@ -337,7 +351,7 @@ async fn main() -> Result<()> {
             let streaming_enabled = !cli.no_stream && cli_conn.engine.supports_streaming();
 
             if streaming_enabled {
-                println!("");
+                qqqa::outln!();
                 if cli.raw {
                     let mut collected = String::new();
                     let fallback = run_cli_completion_streaming(make_request(), |tok| {
@@ -348,7 +362,7 @@ async fn main() -> Result<()> {
                     if collected.is_empty() {
                         collected = fallback;
                     }
-                    println!("");
+                    qqqa::outln!();
                     maybe_copy_first_command(&collected, copy_enabled, cli.raw, cli.debug);
                 } else {
                     let mut formatter = StreamingFormatter::new();
@@ -361,15 +375,15 @@ async fn main() -> Result<()> {
                         }
                     })
                     .await?;
-                    if let Some(tail) = formatter.flush() {
-                        if !tail.is_empty() {
-                            writer.write(&tail);
-                        }
+                    if let Some(tail) = formatter.flush()
+                        && !tail.is_empty()
+                    {
+                        writer.write(&tail);
                     }
                     if collected.is_empty() {
                         collected = fallback;
                     }
-                    println!("");
+                    qqqa::outln!();
                     maybe_copy_first_command(&collected, copy_enabled, cli.raw, cli.debug);
                 }
             } else {
@@ -382,7 +396,7 @@ async fn main() -> Result<()> {
                 let loading = start_loading_animation();
                 let response = run_cli_completion(make_request()).await?;
                 drop(loading);
-                println!("");
+                qqqa::outln!();
                 print_assistant_text(&response, cli.raw);
                 maybe_copy_first_command(&response, copy_enabled, cli.raw, cli.debug);
             }
@@ -390,6 +404,26 @@ async fn main() -> Result<()> {
         _ => unreachable!("Provider/client mismatch"),
     }
 
+    Ok(())
+}
+
+/// Fail when the answer is empty or was cut at the output limit, so scripts
+/// see a non-zero exit code instead of a partial answer.
+fn check_answer(
+    answer: &str,
+    finish_reason: Option<&str>,
+    client: &ChatClient,
+    model: &str,
+) -> Result<()> {
+    if is_truncated(finish_reason) {
+        return Err(truncation_error(client.max_tokens_for(model)));
+    }
+    if answer.trim().is_empty() {
+        return Err(anyhow!(
+            "The model returned an empty answer (finish_reason: {}).",
+            finish_reason.unwrap_or("none")
+        ));
+    }
     Ok(())
 }
 
@@ -412,7 +446,7 @@ where
     args.into_iter()
         .enumerate()
         .map(|(idx, arg)| {
-            if idx > 0 && arg == OsString::from("-ncc") {
+            if idx > 0 && arg == "-ncc" {
                 OsString::from("--ncc")
             } else {
                 arg
@@ -435,7 +469,7 @@ impl PrettyStreamWriter {
         if filtered.is_empty() {
             return;
         }
-        print!("{}", filtered);
+        qqqa::out!("{}", filtered);
         let _ = std::io::stdout().flush();
     }
 
@@ -508,11 +542,11 @@ fn unescape_entities(input: &str) -> String {
 }
 
 fn print_copy_notice(raw_output: bool) {
-    println!("");
+    qqqa::outln!();
     if raw_output {
-        println!("<info>Copied first command to clipboard</info>");
+        qqqa::outln!("<info>Copied first command to clipboard</info>");
     } else {
-        println!(
+        qqqa::outln!(
             "{}",
             render_xmlish_to_ansi("<info>Copied first command to clipboard</info>")
         );
@@ -542,7 +576,7 @@ fn persist_config_flags(cli: &Cli) -> Result<()> {
             cfg.set_copy_first_command(true);
             changed = true;
         }
-        println!("Auto-copy first command: enabled (persisted).");
+        qqqa::outln!("Auto-copy first command: enabled (persisted).");
     }
 
     if cli.disable_auto_copy {
@@ -550,7 +584,7 @@ fn persist_config_flags(cli: &Cli) -> Result<()> {
             cfg.set_copy_first_command(false);
             changed = true;
         }
-        println!("Auto-copy first command: disabled (persisted).");
+        qqqa::outln!("Auto-copy first command: disabled (persisted).");
     }
 
     if changed {
@@ -561,7 +595,7 @@ fn persist_config_flags(cli: &Cli) -> Result<()> {
 }
 
 fn configure_color_output() {
-    let stdout_is_tty = atty::is(atty::Stream::Stdout);
+    let stdout_is_tty = std::io::stdout().is_terminal();
     let enable_color = if env_var_truthy("CLICOLOR_FORCE") {
         true
     } else if std::env::var_os("NO_COLOR").is_some() || env_var_falsey("CLICOLOR") {

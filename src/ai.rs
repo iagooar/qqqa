@@ -13,7 +13,10 @@ use std::io::Cursor;
 use std::path::Path;
 use std::time::Duration;
 
-const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 800;
+/// Default output cap for ordinary models.
+pub const DEFAULT_MAX_TOKENS: u32 = 4096;
+/// Default output cap for reasoning models, whose reasoning tokens count against it.
+pub const DEFAULT_REASONING_MAX_TOKENS: u32 = 16384;
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_TEMPERATURE: f32 = 0.15;
@@ -30,32 +33,35 @@ https://openrouter.ai/settings/credits . See https://openrouter.ai/docs/faq for 
     anyhow!(message)
 }
 
-/// Minimal OpenAI-compatible chat streaming delta payload
-#[derive(Debug, Deserialize)]
-struct ChatStreamChunkChoiceDelta {
-    content: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatStreamChunkChoice {
-    delta: Option<ChatStreamChunkChoiceDelta>,
-    #[allow(dead_code)]
-    index: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatStreamChunk {
-    choices: Vec<ChatStreamChunkChoice>,
-}
-
 #[derive(Debug, Deserialize)]
 struct ChatMessage {
-    content: String,
+    #[serde(default)]
+    content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+/// A complete (non-streamed) answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completion {
+    pub content: String,
+    pub finish_reason: Option<String>,
+}
+
+/// How a streamed answer ended.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamSummary {
+    pub finish_reason: Option<String>,
+}
+
+/// True when the provider stopped because the output reached the token cap.
+pub fn is_truncated(finish_reason: Option<&str>) -> bool {
+    matches!(finish_reason, Some("length") | Some("max_tokens"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,6 +98,8 @@ struct ChatMessageWithTools {
 #[derive(Debug, Deserialize)]
 struct ChatChoiceWithTools {
     message: ChatMessageWithTools,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,6 +129,8 @@ pub struct ChatClient {
     reasoning_effort: Option<String>,
     temperature_override: Option<f32>,
     temperature_user_override: bool,
+    max_tokens: Option<u32>,
+    reasoning_max_tokens: Option<u32>,
     default_headers: HeaderMap,
 }
 
@@ -158,6 +168,8 @@ impl ChatClient {
             reasoning_effort: None,
             temperature_override: None,
             temperature_user_override: false,
+            max_tokens: None,
+            reasoning_max_tokens: None,
             default_headers,
         })
     }
@@ -171,6 +183,28 @@ impl ChatClient {
         self.temperature_override = temperature;
         self.temperature_user_override = user_provided && temperature.is_some();
         self
+    }
+
+    /// Output caps from the profile; `None` keeps the built-in defaults.
+    pub fn with_max_tokens(
+        mut self,
+        max_tokens: Option<u32>,
+        reasoning_max_tokens: Option<u32>,
+    ) -> Self {
+        self.max_tokens = max_tokens;
+        self.reasoning_max_tokens = reasoning_max_tokens;
+        self
+    }
+
+    /// The output cap for `model`: reasoning models use the reasoning cap first.
+    pub fn max_tokens_for(&self, model: &str) -> u32 {
+        if Self::is_new_style_model(model) {
+            self.reasoning_max_tokens
+                .or(self.max_tokens)
+                .unwrap_or(DEFAULT_REASONING_MAX_TOKENS)
+        } else {
+            self.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS)
+        }
     }
 
     fn request_builder(&self) -> RequestBuilder {
@@ -219,7 +253,8 @@ impl ChatClient {
         }
     }
 
-    fn apply_model_defaults(&self, body: &mut Value, model: &str, max_tokens: u32, debug: bool) {
+    fn apply_model_defaults(&self, body: &mut Value, model: &str, debug: bool) {
+        let max_tokens = self.max_tokens_for(model);
         if let Some(obj) = body.as_object_mut() {
             obj.remove("max_tokens");
             obj.remove("max_completion_tokens");
@@ -263,36 +298,11 @@ impl ChatClient {
 
     /// Non-streaming chat completion: returns the full assistant message.
     pub async fn chat_once(&self, model: &str, prompt: &str, debug: bool) -> Result<String> {
-        let mut body = json!({
-            "model": model,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ]
-        });
-        self.apply_model_defaults(&mut body, model, DEFAULT_MAX_COMPLETION_TOKENS, debug);
-        if debug {
-            let bytes = serde_json::to_vec(&body).unwrap();
-            eprintln!("[debug] POST {} ({} bytes)", self.chat_url(), bytes.len());
-        }
-        let resp = self
-            .request_builder()
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| "HTTP request failed")?;
-        let status = resp.status();
-        let text = resp.text().await?;
-        if !status.is_success() {
-            return Err(format_api_error(status, &text, &self.base_url));
-        }
-        let parsed: ChatResponse = serde_json::from_str(&text)
-            .with_context(|| format!("Failed to parse chat response JSON: {}", text))?;
-        let choice = parsed
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("No choices in response"))?;
-        Ok(choice.message.content)
+        let messages = [Msg {
+            role: "user",
+            content: prompt,
+        }];
+        self.chat_once_messages(model, &messages, debug).await
     }
 
     /// Non-streaming chat completion using explicit messages.
@@ -302,18 +312,33 @@ impl ChatClient {
         messages: &[Msg<'_>],
         debug: bool,
     ) -> Result<String> {
+        Ok(self.complete(model, messages, debug).await?.content)
+    }
+
+    /// Non-streaming chat completion that also reports why the model stopped.
+    pub async fn complete(
+        &self,
+        model: &str,
+        messages: &[Msg<'_>],
+        debug: bool,
+    ) -> Result<Completion> {
         let mut body = json!({
             "model": model,
             "messages": messages
         });
-        self.apply_model_defaults(&mut body, model, DEFAULT_MAX_COMPLETION_TOKENS, debug);
+        self.apply_model_defaults(&mut body, model, debug);
+        let text = self.post_json(&body, debug).await?;
+        parse_completion(&text)
+    }
+
+    async fn post_json(&self, body: &Value, debug: bool) -> Result<String> {
         if debug {
-            let bytes = serde_json::to_vec(&body).unwrap();
+            let bytes = serde_json::to_vec(body).unwrap_or_default();
             eprintln!("[debug] POST {} ({} bytes)", self.chat_url(), bytes.len());
         }
         let resp = self
             .request_builder()
-            .json(&body)
+            .json(body)
             .send()
             .await
             .with_context(|| "HTTP request failed")?;
@@ -322,14 +347,7 @@ impl ChatClient {
         if !status.is_success() {
             return Err(format_api_error(status, &text, &self.base_url));
         }
-        let parsed: ChatResponse = serde_json::from_str(&text)
-            .with_context(|| format!("Failed to parse chat response JSON: {}", text))?;
-        let choice = parsed
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("No choices in response"))?;
-        Ok(choice.message.content)
+        Ok(text)
     }
 
     /// Non-streaming chat completion allowing tool specs; returns either content or a tool call.
@@ -345,22 +363,8 @@ impl ChatClient {
             "messages": messages,
             "tools": tools
         });
-        self.apply_model_defaults(&mut body, model, DEFAULT_MAX_COMPLETION_TOKENS, debug);
-        if debug {
-            let bytes = serde_json::to_vec(&body).unwrap();
-            eprintln!("[debug] POST {} ({} bytes)", self.chat_url(), bytes.len());
-        }
-        let resp = self
-            .request_builder()
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| "HTTP request failed")?;
-        let status = resp.status();
-        let text = resp.text().await?;
-        if !status.is_success() {
-            return Err(format_api_error(status, &text, &self.base_url));
-        }
+        self.apply_model_defaults(&mut body, model, debug);
+        let text = self.post_json(&body, debug).await?;
 
         // Try to parse as tool-aware response first
         let parsed_tools: ChatResponseWithTools = serde_json::from_str(&text)
@@ -370,6 +374,9 @@ impl ChatClient {
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("No choices in response"))?;
+        if is_truncated(choice.finish_reason.as_deref()) {
+            return Err(truncation_error(self.max_tokens_for(model)));
+        }
 
         if let Some(calls) = choice.message.tool_calls {
             if let Some(first) = calls.into_iter().next() {
@@ -394,90 +401,30 @@ impl ChatClient {
         model: &str,
         prompt: &str,
         debug: bool,
-        mut on_token: F,
-    ) -> Result<()>
+        on_token: F,
+    ) -> Result<StreamSummary>
     where
         F: FnMut(&str),
     {
-        let mut body = json!({
-            "model": model,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "stream": true
-        });
-        self.apply_model_defaults(&mut body, model, DEFAULT_MAX_COMPLETION_TOKENS, debug);
-        if debug {
-            let bytes = serde_json::to_vec(&body).unwrap();
-            eprintln!(
-                "[debug] POST {} ({} bytes, stream)",
-                self.chat_url(),
-                bytes.len()
-            );
-        }
-        let resp = self
-            .request_builder()
-            .json(&body)
-            .send()
+        let messages = [Msg {
+            role: "user",
+            content: prompt,
+        }];
+        self.chat_stream_messages(model, &messages, debug, on_token)
             .await
-            .with_context(|| "HTTP request failed")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format_api_error(status, &text, &self.base_url));
-        }
-
-        // The OpenAI-compatible API returns text/event-stream with lines prefixed by "data: ".
-        // We read chunks and split by newlines; we accumulate and parse JSON lines.
-        let mut stream = resp.bytes_stream();
-        let mut buffer = Vec::<u8>::new();
-
-        while let Some(item) = stream.next().await {
-            let chunk: Bytes = item?;
-            buffer.extend_from_slice(&chunk);
-            // Process complete lines
-            while let Some(pos) =
-                find_double_newline(&buffer).or_else(|| find_single_newline(&buffer))
-            {
-                let line = buffer.drain(..=pos).collect::<Vec<u8>>();
-                let s = String::from_utf8_lossy(&line);
-                for raw in s.split('\n') {
-                    let data = raw.trim();
-                    if data.is_empty() {
-                        continue;
-                    }
-                    if let Some(rest) = data.strip_prefix("data: ") {
-                        if rest == "[DONE]" {
-                            return Ok(());
-                        }
-                        if let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(rest) {
-                            for c in parsed.choices.into_iter() {
-                                if let Some(delta) = c.delta {
-                                    if let Some(token) = delta.content {
-                                        on_token(&token);
-                                    }
-                                }
-                            }
-                        } else if debug {
-                            eprintln!("[debug] Unparsed stream line: {}", rest);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Streaming chat completion with explicit messages (supports system+user for qq).
+    ///
+    /// Errors when the provider reports an error inside the stream, or when the
+    /// stream ends before the provider says it is finished.
     pub async fn chat_stream_messages<F>(
         &self,
         model: &str,
         messages: &[Msg<'_>],
         debug: bool,
         mut on_token: F,
-    ) -> Result<()>
+    ) -> Result<StreamSummary>
     where
         F: FnMut(&str),
     {
@@ -486,9 +433,9 @@ impl ChatClient {
             "messages": messages,
             "stream": true
         });
-        self.apply_model_defaults(&mut body, model, DEFAULT_MAX_COMPLETION_TOKENS, debug);
+        self.apply_model_defaults(&mut body, model, debug);
         if debug {
-            let bytes = serde_json::to_vec(&body).unwrap();
+            let bytes = serde_json::to_vec(&body).unwrap_or_default();
             eprintln!(
                 "[debug] POST {} ({} bytes, stream)",
                 self.chat_url(),
@@ -508,44 +455,203 @@ impl ChatClient {
             return Err(format_api_error(status, &text, &self.base_url));
         }
 
-        // Reuse the same SSE parsing as non-message streaming
-        let mut stream = resp.bytes_stream();
-        let mut buffer = Vec::<u8>::new();
+        // A server that ignores `stream: true` answers with one JSON body.
+        let is_event_stream = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_none_or(|v| !v.starts_with("application/json"));
+        if !is_event_stream {
+            let text = resp.text().await?;
+            let completion = parse_completion(&text)?;
+            on_token(&completion.content);
+            return Ok(StreamSummary {
+                finish_reason: completion.finish_reason,
+            });
+        }
 
+        let mut stream = resp.bytes_stream();
+        let mut decoder = SseDecoder::default();
+        let mut state = StreamState::default();
         while let Some(item) = stream.next().await {
             let chunk: Bytes = item?;
-            buffer.extend_from_slice(&chunk);
-            while let Some(pos) =
-                find_double_newline(&buffer).or_else(|| find_single_newline(&buffer))
-            {
-                let line = buffer.drain(..=pos).collect::<Vec<u8>>();
-                let s = String::from_utf8_lossy(&line);
-                for raw in s.split('\n') {
-                    let data = raw.trim();
-                    if data.is_empty() {
-                        continue;
-                    }
-                    if let Some(rest) = data.strip_prefix("data: ") {
-                        if rest == "[DONE]" {
-                            return Ok(());
-                        }
-                        if let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(rest) {
-                            for c in parsed.choices.into_iter() {
-                                if let Some(delta) = c.delta {
-                                    if let Some(token) = delta.content {
-                                        on_token(&token);
-                                    }
-                                }
-                            }
-                        } else if debug {
-                            eprintln!("[debug] Unparsed stream line: {}", rest);
-                        }
-                    }
+            for data in decoder.push(&chunk) {
+                if state.handle(&data, debug, &mut on_token)? {
+                    return Ok(state.summary());
                 }
             }
         }
+        for data in decoder.finish() {
+            if state.handle(&data, debug, &mut on_token)? {
+                return Ok(state.summary());
+            }
+        }
+        if state.finish_reason.is_none() {
+            return Err(anyhow!(
+                "The stream ended before the provider finished the answer (no [DONE] and no finish_reason). The output above may be incomplete."
+            ));
+        }
+        Ok(state.summary())
+    }
+}
 
-        Ok(())
+/// Error for an answer that stopped at the output cap.
+pub fn truncation_error(max_tokens: u32) -> anyhow::Error {
+    anyhow!(
+        "The model stopped at the output limit ({} tokens), so the answer is incomplete. Raise `max_tokens` (or `reasoning_max_tokens` for reasoning models) in the profile.",
+        max_tokens
+    )
+}
+
+fn parse_completion(text: &str) -> Result<Completion> {
+    let parsed: ChatResponse = serde_json::from_str(text)
+        .with_context(|| format!("Failed to parse chat response JSON: {}", text))?;
+    let choice = parsed
+        .choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("No choices in response"))?;
+    Ok(Completion {
+        content: choice.message.content.unwrap_or_default(),
+        finish_reason: choice.finish_reason,
+    })
+}
+
+/// What the streamed events said so far.
+#[derive(Default)]
+struct StreamState {
+    finish_reason: Option<String>,
+}
+
+impl StreamState {
+    /// Handle one event payload. Returns true at `[DONE]`.
+    fn handle(&mut self, data: &str, debug: bool, on_token: &mut impl FnMut(&str)) -> Result<bool> {
+        let data = data.trim();
+        if data == "[DONE]" {
+            if self.finish_reason.is_none() {
+                self.finish_reason = Some("stop".to_string());
+            }
+            return Ok(true);
+        }
+        let value: Value = match serde_json::from_str(data) {
+            Ok(v) => v,
+            Err(_) => {
+                if debug {
+                    eprintln!("[debug] Unparsed stream event: {}", data);
+                }
+                return Ok(false);
+            }
+        };
+        if let Some(err) = value.get("error") {
+            return Err(stream_error(err));
+        }
+        let Some(choices) = value.get("choices").and_then(Value::as_array) else {
+            return Ok(false);
+        };
+        for choice in choices {
+            if let Some(token) = choice
+                .get("delta")
+                .and_then(|d| d.get("content"))
+                .and_then(Value::as_str)
+                && !token.is_empty()
+            {
+                on_token(token);
+            }
+            if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                if reason == "error" {
+                    return Err(anyhow!(
+                        "The provider stopped the answer with an error (finish_reason: error)."
+                    ));
+                }
+                self.finish_reason = Some(reason.to_string());
+            }
+        }
+        Ok(false)
+    }
+
+    fn summary(&self) -> StreamSummary {
+        StreamSummary {
+            finish_reason: self.finish_reason.clone(),
+        }
+    }
+}
+
+fn stream_error(err: &Value) -> anyhow::Error {
+    let message = err
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| err.to_string());
+    anyhow!(
+        "The provider reported an error during the stream: {}",
+        message
+    )
+}
+
+/// Incremental decoder for `text/event-stream` (WHATWG HTML, "Interpreting an
+/// event stream"): lines end at LF or CRLF, a blank line ends an event, the
+/// `data` field drops one leading space, and several `data` lines are joined
+/// with LF. Lines starting with `:` are comments.
+#[derive(Default)]
+pub struct SseDecoder {
+    line: Vec<u8>,
+    data: Option<String>,
+}
+
+impl SseDecoder {
+    /// Feed bytes; returns the data of every event completed by them.
+    pub fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+        let mut events = Vec::new();
+        for &b in bytes {
+            if b == b'\n' {
+                let mut line = std::mem::take(&mut self.line);
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                self.handle_line(&String::from_utf8_lossy(&line), &mut events);
+            } else {
+                self.line.push(b);
+            }
+        }
+        events
+    }
+
+    /// End of input: dispatch an event that was not closed by a blank line.
+    pub fn finish(&mut self) -> Vec<String> {
+        let mut events = Vec::new();
+        if !self.line.is_empty() {
+            let line = std::mem::take(&mut self.line);
+            self.handle_line(&String::from_utf8_lossy(&line), &mut events);
+        }
+        if let Some(data) = self.data.take() {
+            events.push(data);
+        }
+        events
+    }
+
+    fn handle_line(&mut self, line: &str, events: &mut Vec<String>) {
+        if line.is_empty() {
+            if let Some(data) = self.data.take() {
+                events.push(data);
+            }
+            return;
+        }
+        if line.starts_with(':') {
+            return;
+        }
+        let (field, value) = match line.split_once(':') {
+            Some((f, v)) => (f, v.strip_prefix(' ').unwrap_or(v)),
+            None => (line, ""),
+        };
+        if field == "data" {
+            match &mut self.data {
+                Some(data) => {
+                    data.push('\n');
+                    data.push_str(value);
+                }
+                None => self.data = Some(value.to_string()),
+            }
+        }
     }
 }
 
@@ -580,15 +686,6 @@ fn load_root_certificates(path: &Path) -> Result<Vec<Certificate>> {
 pub struct Msg<'a> {
     pub role: &'a str,
     pub content: &'a str,
-}
-
-fn find_double_newline(buf: &[u8]) -> Option<usize> {
-    // Find position to cut at a blank line (\n\n). Return index of the second newline.
-    buf.windows(2).position(|w| w == b"\n\n").map(|i| i + 1)
-}
-
-fn find_single_newline(buf: &[u8]) -> Option<usize> {
-    buf.iter().position(|&b| b == b'\n')
 }
 
 mod cli_backend {
@@ -911,16 +1008,16 @@ mod cli_backend {
                     }
                     match parse_claude_stream_line(trimmed) {
                         Ok((token, result_text)) => {
-                            if let Some(t) = token {
-                                if !t.is_empty() {
-                                    aggregated.push_str(&t);
-                                    on_token(&t);
-                                }
+                            if let Some(t) = token
+                                && !t.is_empty()
+                            {
+                                aggregated.push_str(&t);
+                                on_token(&t);
                             }
-                            if let Some(res) = result_text {
-                                if !res.trim().is_empty() {
-                                    fallback = Some(res);
-                                }
+                            if let Some(res) = result_text
+                                && !res.trim().is_empty()
+                            {
+                                fallback = Some(res);
                             }
                         }
                         Err(e) => {
@@ -1059,10 +1156,7 @@ mod cli_backend {
 
     async fn take_stderr_output(stderr: &mut Option<tokio::task::JoinHandle<String>>) -> String {
         if let Some(handle) = stderr.take() {
-            match handle.await {
-                Ok(text) => text,
-                Err(_) => String::new(),
-            }
+            handle.await.unwrap_or_default()
         } else {
             String::new()
         }
@@ -1101,16 +1195,13 @@ mod cli_backend {
             }
             match serde_json::from_str::<CodexEvent>(trimmed) {
                 Ok(event) => {
-                    if event.event_type == "item.completed" {
-                        if let Some(item) = event.item {
-                            if item.item_type == "agent_message" {
-                                if let Some(text) = item.text {
-                                    if !text.trim().is_empty() {
-                                        messages.push(text);
-                                    }
-                                }
-                            }
-                        }
+                    if event.event_type == "item.completed"
+                        && let Some(item) = event.item
+                        && item.item_type == "agent_message"
+                        && let Some(text) = item.text
+                        && !text.trim().is_empty()
+                    {
+                        messages.push(text);
                     }
                 }
                 Err(_) => {
@@ -1135,10 +1226,10 @@ mod cli_backend {
             return Err(anyhow!("CLI provider returned error JSON: {}", err));
         }
 
-        if let Some(response) = value.get("response") {
-            if let Some(text) = extract_text(response) {
-                return Ok(text);
-            }
+        if let Some(response) = value.get("response")
+            && let Some(text) = extract_text(response)
+        {
+            return Ok(text);
         }
 
         if let Some(text) = extract_text(&value) {
@@ -1154,10 +1245,10 @@ mod cli_backend {
         let value = parse_single_json_value(stdout)
             .with_context(|| "CLI provider returned non-JSON output")?;
 
-        if let Some(result_field) = value.get("result") {
-            if let Some(text) = extract_text(result_field) {
-                return Ok(text);
-            }
+        if let Some(result_field) = value.get("result")
+            && let Some(text) = extract_text(result_field)
+        {
+            return Ok(text);
         }
 
         if let Some(text) = extract_text(&value) {
@@ -1201,23 +1292,19 @@ mod cli_backend {
         let mut result_text = None;
 
         if env.event_type == "stream_event" {
-            if let Some(event) = env.event {
-                if event.event_type == "content_block_delta" {
-                    if let Some(delta) = event.delta {
-                        if let Some(text) = delta.text {
-                            if !text.is_empty() {
-                                token = Some(text);
-                            }
-                        }
-                    }
-                }
+            if let Some(event) = env.event
+                && event.event_type == "content_block_delta"
+                && let Some(delta) = event.delta
+                && let Some(text) = delta.text
+                && !text.is_empty()
+            {
+                token = Some(text);
             }
-        } else if env.event_type == "result" {
-            if let Some(result) = env.result {
-                if let Some(text) = extract_text(&result) {
-                    result_text = Some(text);
-                }
-            }
+        } else if env.event_type == "result"
+            && let Some(result) = env.result
+            && let Some(text) = extract_text(&result)
+        {
+            result_text = Some(text);
         }
 
         Ok((token, result_text))
@@ -1225,10 +1312,10 @@ mod cli_backend {
 
     fn parse_single_json_value(stdout: &str) -> Result<Value> {
         let trimmed = stdout.trim();
-        if !trimmed.is_empty() {
-            if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-                return Ok(value);
-            }
+        if !trimmed.is_empty()
+            && let Ok(value) = serde_json::from_str::<Value>(trimmed)
+        {
+            return Ok(value);
         }
 
         for line in stdout.lines().rev() {
@@ -1267,16 +1354,16 @@ mod cli_backend {
                 }
             }
             Value::Object(map) => {
-                if let Some(text) = map.get("text").and_then(|t| t.as_str()) {
-                    if !text.trim().is_empty() {
-                        return Some(text.to_string());
-                    }
+                if let Some(text) = map.get("text").and_then(|t| t.as_str())
+                    && !text.trim().is_empty()
+                {
+                    return Some(text.to_string());
                 }
                 for key in ["content", "messages", "output_text", "result", "output"] {
-                    if let Some(val) = map.get(key) {
-                        if let Some(text) = extract_text(val) {
-                            return Some(text);
-                        }
+                    if let Some(val) = map.get(key)
+                        && let Some(text) = extract_text(val)
+                    {
+                        return Some(text);
                     }
                 }
                 None
@@ -1407,8 +1494,7 @@ mod tests {
         let payload = r#"{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Reasoning"}}
 {"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"First"}}
 {"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Second"}}"#;
-        let merged = payload.replace('\n', "\n");
-        let parsed = parse_codex_response_for_test(&merged).expect("parse");
+        let parsed = parse_codex_response_for_test(payload).expect("parse");
         assert_eq!(parsed, "First\n\nSecond");
     }
 

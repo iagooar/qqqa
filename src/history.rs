@@ -73,10 +73,6 @@ pub fn read_recent_history(limit: usize, debug: bool) -> Vec<String> {
 }
 
 fn is_supported_history_command(line: &str) -> bool {
-    let first = line
-        .trim_start()
-        .split_whitespace()
-        .next()
-        .unwrap_or_default();
+    let first = line.split_whitespace().next().unwrap_or_default();
     matches!(first, "qq" | "qa")
 }
