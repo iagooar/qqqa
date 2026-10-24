@@ -458,3 +458,90 @@ fn qq_rejects_binary_stdin() {
     assert!(run.stderr.contains("binary"), "{}", run.stderr);
     assert_eq!(run.total_hits, 0);
 }
+
+fn tool_call_reply(name: &str, arguments: serde_json::Value) -> String {
+    serde_json::json!({"choices":[{"message":{"content":null,"tool_calls":[{"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]},"finish_reason":"tool_calls"}]}).to_string()
+}
+
+/// Run `qa -y` against a mock that replies with `reply`; returns (code, stdout, stderr).
+fn qa_with_reply(reply: &str) -> (Option<i32>, String, String) {
+    let server = MockServer::start();
+    mock_reply(&server, "application/json", reply);
+    let home = tempdir().unwrap();
+    let out = cargo_bin_cmd!("qa")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", "")
+        .env("OPENROUTER_API_KEY", "test")
+        .current_dir(home.path())
+        .args(["-n", "-y", "--api-base", &server.base_url(), "do it"])
+        .write_stdin("")
+        .output()
+        .unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn qa_succeeds_and_shows_status_for_a_passing_command() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let reply = tool_call_reply(
+        "execute_command",
+        serde_json::json!({"command":"echo qa-ok"}),
+    );
+    let (code, stdout, stderr) = qa_with_reply(&reply);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("qa-ok"));
+    assert!(
+        stderr.contains("[tool:execute_command] exit status 0"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn qa_copies_the_exit_code_of_a_failing_command() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    // grep exits 2 for a missing file on both GNU and BSD.
+    let reply = tool_call_reply(
+        "execute_command",
+        serde_json::json!({"command":"grep x qqqa-no-such-file"}),
+    );
+    let (code, _, stderr) = qa_with_reply(&reply);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("[tool:execute_command] exit status 2"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn qa_fails_when_a_tool_fails() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let reply = tool_call_reply("read_file", serde_json::json!({"path":"no-such-file.txt"}));
+    let (code, stdout, stderr) = qa_with_reply(&reply);
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains("[tool:read_file:error]"), "{stderr}");
+    assert!(
+        !stdout.contains("error"),
+        "errors must not go to stdout: {stdout}"
+    );
+}
+
+#[test]
+fn qa_fails_on_an_unknown_tool() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let reply = tool_call_reply("delete_everything", serde_json::json!({}));
+    let (code, _, stderr) = qa_with_reply(&reply);
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains("Unknown tool call"), "{stderr}");
+}

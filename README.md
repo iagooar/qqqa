@@ -351,7 +351,7 @@ qa --no-fun "format and lint the repo"
 qa -y "count lines across *.rs"
 ```
 
-When qa runs a command while stdout is a terminal, output streams live; the structured `[tool:execute_command]` summary still prints afterward for easy copying.
+When qa runs a command, its output streams live (stdout to stdout, stderr to stderr). Afterwards qa prints `[tool:execute_command] exit status N` on stderr and exits with the same code N, so scripts can check `$?`. If a tool fails (a file cannot be read, a command is refused or canceled), qa prints `[tool:<name>:error] …` on stderr and exits 1.
 
 `execute_command` prints the proposed command and asks for confirmation. It warns if the working directory is outside your home. Use `-y` to auto approve in trusted workflows.
 

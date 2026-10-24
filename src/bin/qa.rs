@@ -9,6 +9,7 @@ use qqqa::history::read_recent_history;
 use qqqa::perms;
 use qqqa::prompt::{build_qa_system_prompt, build_qa_user_message, coalesce_prompt_inputs};
 use qqqa::shell::{ShellKind, detect_shell, shell_hint_for_prompt};
+use qqqa::tools::execute_command::CommandOutput;
 use qqqa::tools::{ToolCall, parse_tool_call};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -309,12 +310,13 @@ async fn main() -> Result<()> {
         _ => unreachable!("Provider/client mismatch"),
     };
 
+    let mut exit_code = 0;
     match assistant_reply {
         AssistantReply::ToolCall {
             name,
             arguments_json,
         } => {
-            let handled = execute_tool_call(
+            exit_code = execute_tool_call(
                 name.as_str(),
                 &arguments_json,
                 cli.yes,
@@ -323,10 +325,8 @@ async fn main() -> Result<()> {
                 &mut cfg,
                 &path,
             )
-            .await?;
-            if !handled {
-                qqqa::outln!("Unknown tool call: {}", name);
-            }
+            .await?
+            .ok_or_else(|| anyhow!("Unknown tool call: {}", name))?;
         }
         AssistantReply::Content(assistant) => {
             if cli.debug {
@@ -334,24 +334,10 @@ async fn main() -> Result<()> {
             }
             // Try to parse as a tool call per our plain-JSON protocol; else print the answer.
             match parse_tool_call(assistant.trim()) {
-                Ok(call) => match call {
-                    ToolCall::ReadFile(args) => match qqqa::tools::read_file::run(args) {
-                        Ok(content) => print_tool_result("read_file", &content),
-                        Err(e) => print_tool_error("read_file", &e.to_string()),
-                    },
-                    ToolCall::WriteFile(args) => match qqqa::tools::write_file::run(args) {
-                        Ok(summary) => print_tool_result("write_file", &summary),
-                        Err(e) => print_tool_error("write_file", &e.to_string()),
-                    },
-                    ToolCall::ExecuteCommand(args) => match run_execute_command_with_allowlist(
-                        args, cli.yes, cli.debug, shell_kind, &mut cfg, &path,
-                    )
-                    .await
-                    {
-                        Ok(result) => print_execute_command_result(&result, cli.debug),
-                        Err(e) => print_tool_error("execute_command", &e.to_string()),
-                    },
-                },
+                Ok(call) => {
+                    exit_code =
+                        run_tool(call, cli.yes, cli.debug, shell_kind, &mut cfg, &path).await;
+                }
                 Err(_) => {
                     qqqa::outln!("{}", assistant.trim_end());
                 }
@@ -359,13 +345,50 @@ async fn main() -> Result<()> {
         }
     }
 
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-struct ExecuteCommandResult {
-    summary: String,
-    streamed_live: bool,
+/// Run one tool call and return qa's exit code: the command's own exit code
+/// for `execute_command`, 1 when a tool fails, else 0. Results go to stdout;
+/// errors and the command's exit status go to stderr.
+async fn run_tool(
+    call: ToolCall,
+    auto_yes: bool,
+    debug: bool,
+    shell: ShellKind,
+    cfg: &mut Config,
+    cfg_path: &Path,
+) -> i32 {
+    match call {
+        ToolCall::ReadFile(args) => match qqqa::tools::read_file::run(args) {
+            Ok(content) => {
+                print_tool_result("read_file", &content);
+                0
+            }
+            Err(e) => print_tool_error("read_file", &e.to_string()),
+        },
+        ToolCall::WriteFile(args) => match qqqa::tools::write_file::run(args) {
+            Ok(summary) => {
+                print_tool_result("write_file", &summary);
+                0
+            }
+            Err(e) => print_tool_error("write_file", &e.to_string()),
+        },
+        ToolCall::ExecuteCommand(args) => {
+            match run_execute_command_with_allowlist(args, auto_yes, debug, shell, cfg, cfg_path)
+                .await
+            {
+                Ok(output) => {
+                    eprintln!("[tool:execute_command] exit status {}", output.exit_code);
+                    output.exit_code
+                }
+                Err(e) => print_tool_error("execute_command", &e.to_string()),
+            }
+        }
+    }
 }
 
 async fn run_execute_command_with_allowlist(
@@ -375,7 +398,7 @@ async fn run_execute_command_with_allowlist(
     shell: ShellKind,
     cfg: &mut Config,
     cfg_path: &Path,
-) -> Result<ExecuteCommandResult> {
+) -> Result<CommandOutput> {
     let mut base_dir = std::env::current_dir().context("Failed to read current directory")?;
     if let Ok(canon) = base_dir.canonicalize() {
         base_dir = canon;
@@ -399,15 +422,9 @@ async fn run_execute_command_with_allowlist(
         let on_chunk: Option<
             &mut dyn for<'chunk> FnMut(qqqa::tools::execute_command::StreamChunk<'chunk>),
         > = Some(&mut stream_printer);
-        let streaming_enabled = on_chunk.is_some();
         let exec_args = sanitize_execute_args(original_args.clone(), &base_dir, debug);
         match qqqa::tools::execute_command::run(exec_args, auto_yes, debug, shell, on_chunk).await {
-            Ok(summary) => {
-                return Ok(ExecuteCommandResult {
-                    summary,
-                    streamed_live: streaming_enabled,
-                });
-            }
+            Ok(output) => return Ok(output),
             Err(err) => {
                 if let Some(program) = err
                     .downcast_ref::<perms::CommandNotAllowedError>()
@@ -530,7 +547,7 @@ async fn execute_tool_call(
     shell: ShellKind,
     cfg: &mut Config,
     cfg_path: &Path,
-) -> Result<bool> {
+) -> Result<Option<i32>> {
     if debug {
         eprintln!("[debug] tool call '{}' args: {}", name, arguments_json);
     }
@@ -543,35 +560,28 @@ async fn execute_tool_call(
                 let normalized = normalize_tool_arguments(&current_args)?;
                 let args: qqqa::tools::read_file::Args = serde_json::from_str(&normalized)
                     .map_err(|e| anyhow!("Failed to parse read_file args: {}", e))?;
-                match qqqa::tools::read_file::run(args) {
-                    Ok(content) => print_tool_result("read_file", &content),
-                    Err(e) => print_tool_error("read_file", &e.to_string()),
-                }
-                return Ok(true);
+                let call = ToolCall::ReadFile(args);
+                return Ok(Some(
+                    run_tool(call, auto_yes, debug, shell, cfg, cfg_path).await,
+                ));
             }
             "write_file" => {
                 let normalized = normalize_tool_arguments(&current_args)?;
                 let args: qqqa::tools::write_file::Args = serde_json::from_str(&normalized)
                     .map_err(|e| anyhow!("Failed to parse write_file args: {}", e))?;
-                match qqqa::tools::write_file::run(args) {
-                    Ok(summary) => print_tool_result("write_file", &summary),
-                    Err(e) => print_tool_error("write_file", &e.to_string()),
-                }
-                return Ok(true);
+                let call = ToolCall::WriteFile(args);
+                return Ok(Some(
+                    run_tool(call, auto_yes, debug, shell, cfg, cfg_path).await,
+                ));
             }
             "execute_command" => {
                 let normalized = normalize_tool_arguments(&current_args)?;
                 let args: qqqa::tools::execute_command::Args = serde_json::from_str(&normalized)
                     .map_err(|e| anyhow!("Failed to parse execute_command args: {}", e))?;
-                match run_execute_command_with_allowlist(
-                    args, auto_yes, debug, shell, cfg, cfg_path,
-                )
-                .await
-                {
-                    Ok(result) => print_execute_command_result(&result, debug),
-                    Err(e) => print_tool_error("execute_command", &e.to_string()),
-                }
-                return Ok(true);
+                let call = ToolCall::ExecuteCommand(args);
+                return Ok(Some(
+                    run_tool(call, auto_yes, debug, shell, cfg, cfg_path).await,
+                ));
             }
             "json" => {
                 let inner: serde_json::Value = serde_json::from_str(&current_args)
@@ -588,7 +598,7 @@ async fn execute_tool_call(
                 current_args = serde_json::to_string(&arguments)?;
                 continue;
             }
-            _ => return Ok(false),
+            _ => return Ok(None),
         }
     }
 }
@@ -598,8 +608,10 @@ fn print_tool_result(tool: &str, result: &str) {
     qqqa::outln!("{}", result.trim_end());
 }
 
-fn print_tool_error(tool: &str, err: &str) {
-    qqqa::outln!("[tool:{}:error] {}", tool, err);
+/// Report a failed tool on stderr; returns qa's exit code for it.
+fn print_tool_error(tool: &str, err: &str) -> i32 {
+    eprintln!("[tool:{}:error] {}", tool, err);
+    1
 }
 
 fn normalize_tool_arguments(raw: &str) -> Result<String> {
@@ -623,21 +635,6 @@ fn normalize_tool_arguments(raw: &str) -> Result<String> {
     }
 }
 
-fn print_execute_command_result(result: &ExecuteCommandResult, debug: bool) {
-    if let Some(msg) = format_execute_command_result(result, debug) {
-        print_tool_result("execute_command", &msg);
-    }
-}
-
-fn format_execute_command_result(result: &ExecuteCommandResult, debug: bool) -> Option<String> {
-    let _ = debug;
-    if result.streamed_live {
-        None
-    } else {
-        Some(result.summary.trim_end().to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,6 +642,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn execute_tool_call_handles_json_wrapper() {
         let dir = tempdir().unwrap();
         unsafe {
@@ -674,10 +672,15 @@ mod tests {
         )
         .await
         .expect("json wrapper should succeed");
-        assert!(result, "json wrapper should dispatch an inner tool");
+        assert_eq!(
+            result,
+            Some(0),
+            "json wrapper should dispatch an inner tool"
+        );
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn execute_tool_call_handles_nested_json_wrapper() {
         let dir = tempdir().unwrap();
         unsafe {
@@ -711,7 +714,11 @@ mod tests {
         )
         .await
         .expect("nested json wrapper should succeed");
-        assert!(result, "nested json wrapper should dispatch an inner tool");
+        assert_eq!(
+            result,
+            Some(0),
+            "nested json wrapper should dispatch an inner tool"
+        );
     }
 
     #[test]
@@ -763,27 +770,6 @@ mod tests {
         let (result, fell_back) = sanitize_cwd_path(Some(nested.to_string_lossy().as_ref()), &base);
         assert_eq!(result, nested);
         assert!(!fell_back);
-    }
-
-    #[test]
-    fn format_execute_command_result_suppresses_streamed_output_without_debug() {
-        let result = ExecuteCommandResult {
-            summary: "Exit code: 0\n--- stdout ---\nok\n--- stderr ---\n".into(),
-            streamed_live: true,
-        };
-        assert!(format_execute_command_result(&result, false).is_none());
-        assert!(format_execute_command_result(&result, true).is_none());
-    }
-
-    #[test]
-    fn format_execute_command_result_returns_full_summary_when_not_streamed() {
-        let result = ExecuteCommandResult {
-            summary: "Exit code: 1\n--- stdout ---\n\n--- stderr ---\nerr\n".into(),
-            streamed_live: false,
-        };
-        let msg = format_execute_command_result(&result, false).expect("should emit");
-        assert!(msg.contains("Exit code: 1"));
-        assert!(msg.contains("--- stderr ---"));
     }
 
     #[test]
