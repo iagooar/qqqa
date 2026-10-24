@@ -692,3 +692,58 @@ fn provider_headers_layer_over_the_defaults() {
         "https://github.com/iagooar/qqqa"
     );
 }
+
+fn resolve_openrouter(
+    config: serde_json::Value,
+    dir: &Path,
+) -> anyhow::Result<qqqa::config::EffectiveProfile> {
+    let mut config = config;
+    config["model_providers"]["openrouter"]["api_key"] = serde_json::json!("k");
+    let path = write_json(dir, &config);
+    Config::load_from(&path)?.resolve_profile(Some("openrouter"), None, Some(dir))
+}
+
+#[test]
+fn system_prompt_text_file_and_precedence() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("prompt.txt"), "From file.").unwrap();
+
+    let text =
+        resolve_openrouter(serde_json::json!({"system_prompt": "Global."}), dir.path()).unwrap();
+    assert_eq!(text.system_prompt.as_deref(), Some("Global."));
+
+    let file = resolve_openrouter(
+        serde_json::json!({"profiles": {"openrouter": {"system_prompt_file": "prompt.txt"}}}),
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(file.system_prompt.as_deref(), Some("From file."));
+
+    let profile_wins = resolve_openrouter(
+        serde_json::json!({
+            "system_prompt": "Global.",
+            "profiles": {"openrouter": {"system_prompt": "Profile."}}
+        }),
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(profile_wins.system_prompt.as_deref(), Some("Profile."));
+
+    let blank = resolve_openrouter(serde_json::json!({"system_prompt": "  "}), dir.path()).unwrap();
+    assert!(blank.system_prompt.is_none());
+}
+
+#[test]
+fn system_prompt_errors_are_clear() {
+    let dir = tempdir().unwrap();
+    let both = resolve_openrouter(
+        serde_json::json!({"system_prompt": "a", "system_prompt_file": "b.txt"}),
+        dir.path(),
+    );
+    assert!(both.unwrap_err().to_string().contains("only one of"));
+    let missing = resolve_openrouter(
+        serde_json::json!({"system_prompt_file": "nope.txt"}),
+        dir.path(),
+    );
+    assert!(format!("{:#}", missing.unwrap_err()).contains("system_prompt_file"));
+}

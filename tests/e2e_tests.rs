@@ -650,3 +650,39 @@ fn qq_sends_configured_headers_and_extra_body() {
     assert_eq!(routed.hits(), 1);
     assert!(String::from_utf8_lossy(&out.stdout).contains("routed"));
 }
+
+#[test]
+fn qq_uses_a_configured_system_prompt() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let server = MockServer::start();
+    let custom = server.mock(|when, then| {
+        when.method(POST)
+            .path("/chat/completions")
+            .body_contains("You are a friendly general assistant.")
+            .matches(|req| {
+                !String::from_utf8_lossy(req.body.as_deref().unwrap_or_default())
+                    .contains("TOPIC RESTRICTIONS")
+            });
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(sse(&["hello"]));
+    });
+    let home = tempdir().unwrap();
+    write_config(
+        home.path(),
+        &serde_json::json!({"system_prompt": "You are a friendly general assistant."}),
+    );
+    let out = qq(home.path(), &server)
+        .args(["-r", "x"])
+        .write_stdin("")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(custom.hits(), 1);
+}

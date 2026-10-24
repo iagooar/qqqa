@@ -223,7 +223,10 @@ async fn main() -> Result<()> {
     };
 
     // Build system + user messages for formatting/topic control.
-    let mut system = build_qq_system_prompt();
+    let mut system = eff
+        .system_prompt
+        .clone()
+        .unwrap_or_else(build_qq_system_prompt);
     if cfg.no_emoji_enabled() {
         system.push_str("\nHard rule: You MUST NOT use emojis anywhere in the response.\n");
     }

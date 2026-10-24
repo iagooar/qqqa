@@ -125,6 +125,14 @@ pub struct Profile {
     /// Optional text appended to the built-in system prompt for this profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_suffix: Option<String>,
+    /// Text that replaces qq's built-in system prompt (qa keeps its own,
+    /// because it defines the tool protocol). `prompt_suffix` still applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Like `system_prompt`, read from a file; relative paths resolve against
+    /// the config directory. Set at most one of the two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_file: Option<PathBuf>,
     /// Optional output cap (tokens) for ordinary models. Default 4096.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
@@ -161,6 +169,14 @@ pub struct Config {
     /// Optional text appended to the built-in system prompt for every profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_suffix: Option<String>,
+    /// For every profile without its own: text that replaces qq's built-in system prompt (qa keeps its own,
+    /// because it defines the tool protocol). `prompt_suffix` still applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Like `system_prompt`, read from a file; relative paths resolve against
+    /// the config directory. Set at most one of the two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_file: Option<PathBuf>,
     /// Keys this release does not know; kept so a save never drops them.
     #[serde(flatten, default)]
     pub extra: serde_json::Map<String, Value>,
@@ -366,6 +382,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
                 extra_body: Default::default(),
@@ -381,6 +399,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
                 extra_body: Default::default(),
@@ -396,6 +416,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
                 extra_body: Default::default(),
@@ -411,6 +433,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
                 extra_body: Default::default(),
@@ -426,6 +450,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
                 extra_body: Default::default(),
@@ -441,6 +467,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
                 extra_body: Default::default(),
@@ -456,6 +484,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
                 extra_body: Default::default(),
@@ -471,6 +501,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
                 extra_body: Default::default(),
@@ -486,6 +518,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
                 extra_body: Default::default(),
@@ -502,6 +536,8 @@ impl Default for Config {
             no_emoji: None,
             command_allowlist: None,
             prompt_suffix: None,
+            system_prompt: None,
+            system_prompt_file: None,
             extra: Default::default(),
         }
     }
@@ -542,6 +578,8 @@ pub struct EffectiveProfile {
     pub reasoning_effort: Option<String>,
     pub temperature: Option<f32>,
     pub prompt_suffix: Option<String>,
+    /// Replacement for qq's built-in system prompt, if configured.
+    pub system_prompt: Option<String>,
     pub max_tokens: Option<u32>,
     pub reasoning_max_tokens: Option<u32>,
 }
@@ -864,6 +902,21 @@ impl Config {
             }
         };
 
+        let system_prompt = match resolve_system_prompt(
+            profile.system_prompt.as_deref(),
+            profile.system_prompt_file.as_deref(),
+            config_dir,
+            &format!("profile '{}'", profile_name),
+        )? {
+            Some(prompt) => Some(prompt),
+            None => resolve_system_prompt(
+                self.system_prompt.as_deref(),
+                self.system_prompt_file.as_deref(),
+                config_dir,
+                "the config",
+            )?,
+        };
+
         Ok(EffectiveProfile {
             provider_key: provider_key.clone(),
             model,
@@ -875,6 +928,7 @@ impl Config {
                 .clone()
                 .or_else(|| self.prompt_suffix.clone())
                 .filter(|suffix| !suffix.trim().is_empty()),
+            system_prompt,
             max_tokens: profile.max_tokens,
             reasoning_max_tokens: profile.reasoning_max_tokens,
         })
@@ -1141,6 +1195,33 @@ fn set_permissions_dir(path: &Path, _debug: bool) -> Result<()> {
         fs::set_permissions(path, perms)?;
     }
     Ok(())
+}
+
+/// The system prompt set at one level (a profile, or the config), if any.
+/// Blank text counts as unset; setting both the text and a file is an error.
+fn resolve_system_prompt(
+    text: Option<&str>,
+    file: Option<&Path>,
+    config_dir: Option<&Path>,
+    level: &str,
+) -> Result<Option<String>> {
+    match (text, file) {
+        (Some(_), Some(_)) => Err(anyhow!(
+            "Set only one of system_prompt and system_prompt_file in {}",
+            level
+        )),
+        (Some(text), None) => Ok(Some(text.to_string()).filter(|t| !t.trim().is_empty())),
+        (None, Some(file)) => {
+            let path = match config_dir {
+                Some(dir) if !file.is_absolute() => dir.join(file),
+                _ => file.to_path_buf(),
+            };
+            let text = fs::read_to_string(&path)
+                .with_context(|| format!("Reading system_prompt_file for {}", level))?;
+            Ok(Some(text).filter(|t| !t.trim().is_empty()))
+        }
+        (None, None) => Ok(None),
+    }
 }
 
 /// Write `bytes` to `path` so a reader sees the old file or the new one, never
