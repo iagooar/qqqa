@@ -234,7 +234,7 @@ for t in "${targets[@]}"; do
     echo "    Installing target $t via rustup..."
     rustup target add "$t"
   fi
-  if ! RUSTFLAGS="${RUSTFLAGS:-}" cargo build --release --target "$t"; then
+  if ! RUSTFLAGS="${RUSTFLAGS:-}" cargo build --release --locked --target "$t"; then
     echo "    ERROR: build failed for $t" >&2
     if is_required_target "$t"; then
       exit 1

@@ -10,7 +10,7 @@ use qqqa::perms;
 use qqqa::prompt::{build_qa_system_prompt, build_qa_user_message, coalesce_prompt_inputs};
 use qqqa::shell::{ShellKind, detect_shell, shell_hint_for_prompt};
 use qqqa::tools::{ToolCall, parse_tool_call};
-use std::io::{Read, Stdin, Write};
+use std::io::{IsTerminal, Read, Stdin, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     }
 
     // Handle stdin piping for extra context.
-    let stdin_is_tty = atty::is(atty::Stream::Stdin);
+    let stdin_is_tty = std::io::stdin().is_terminal();
     let stdin_block = if !stdin_is_tty {
         Some(read_all_stdin(std::io::stdin())?)
     } else {
@@ -409,7 +409,7 @@ async fn run_execute_command_with_allowlist(
                     .downcast_ref::<perms::CommandNotAllowedError>()
                     .map(|e| e.program.clone())
                 {
-                    if !atty::is(atty::Stream::Stdin) {
+                    if !std::io::stdin().is_terminal() {
                         return Err(err);
                     }
                     if prompt_add_command_to_allowlist(&program)? {

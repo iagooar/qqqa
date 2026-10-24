@@ -14,7 +14,7 @@ use qqqa::history::read_recent_history;
 use qqqa::prompt::{build_qq_system_prompt, build_qq_user_message, coalesce_prompt_inputs};
 use qqqa::shell::{detect_shell, shell_hint_for_prompt};
 use std::ffi::OsString;
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
 use std::io::{Read, Stdin};
 use std::time::Duration;
 
@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
     }
 
     // Detect piped stdin and read it if present.
-    let stdin_is_tty = atty::is(atty::Stream::Stdin);
+    let stdin_is_tty = std::io::stdin().is_terminal();
     let stdin_block = if !stdin_is_tty {
         Some(read_all_stdin(std::io::stdin())?)
     } else {
@@ -561,7 +561,7 @@ fn persist_config_flags(cli: &Cli) -> Result<()> {
 }
 
 fn configure_color_output() {
-    let stdout_is_tty = atty::is(atty::Stream::Stdout);
+    let stdout_is_tty = std::io::stdout().is_terminal();
     let enable_color = if env_var_truthy("CLICOLOR_FORCE") {
         true
     } else if std::env::var_os("NO_COLOR").is_some() || env_var_falsey("CLICOLOR") {
