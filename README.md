@@ -192,6 +192,7 @@ Defaults written to `~/.qq/config.json`:
 - Optional per-profile or global `prompt_suffix` text appended to the built-in system prompt (does not replace it). Useful for rules like "assume tools are installed" or "be less chatty".
 - Optional per-profile `reasoning_effort` for GPT-5 family models. If you leave it unset, qqqa sends `"reasoning_effort": "minimal"` for any `gpt-5*` model to keep responses fast. Set it to `"low"`, `"medium"`, or `"high"` when you want deeper reasoning.
 - (discouraged) Optional per-profile `temperature`. Most models default to `0.15` unless you set it in `~/.qq/config.json` or pass `--temperature <value>` for a single run. GPT-5 models ignore custom temperatures; qqqa forces them to `1.0`.
+- Optional per-profile `max_tokens` (output cap for ordinary models, default `4096`) and `reasoning_max_tokens` (output cap for reasoning models such as `gpt-5*`, `o1`, `o3`, whose reasoning tokens count against it; it falls back to `max_tokens`, then to `16384`). When an answer stops at the cap, qq and qa print what arrived and exit with an error that names the limit, so scripts never take a cut-off answer as complete.
 - (discouraged): you can change the timeout, e.g. `"timeout": "240"` under a model profile in `~/.qq/config.json` to raise the per-request limit (`qq` + `qa` default to 180 s - this is SLOW; faster models are a better fix).
 
 Example override in `~/.qq/config.json`:
@@ -211,6 +212,7 @@ Example override in `~/.qq/config.json`:
 - Optional flag: `no_emoji` (unset by default). Set via `qq --no-fun` or `qa --no-fun`.
 - Optional auto-copy: `copy_first_command` (unset/false by default). Enable during `qq --init`, by running `qq --enable-auto-copy`, or by editing `~/.qq/config.json` so qq copies the first `<cmd>` block to your clipboard. Turn it off with `qq --disable-auto-copy`. Override per run with `--copy-command`/`--cc` or `--no-copy-command`/`--ncc` (also available as `-ncc`).
 - Per-run control: `--no-stream` forces qq to wait for the full response before printing; streaming is the default.
+- Errors are never silent: if the provider reports an error inside the stream, the stream ends before the provider finishes, or the answer is empty, `qq` prints what it received and exits non-zero.
 
 ### Terminal history
 

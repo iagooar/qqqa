@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser};
 use qqqa::ai::{
-    ChatClient, CliCompletionRequest, DEFAULT_REQUEST_TIMEOUT_SECS, Msg, run_cli_completion,
-    run_cli_completion_streaming,
+    ChatClient, CliCompletionRequest, DEFAULT_REQUEST_TIMEOUT_SECS, Msg, is_truncated,
+    run_cli_completion, run_cli_completion_streaming, truncation_error,
 };
 use qqqa::clipboard;
 use qqqa::config::{Config, InitExistsError, ProviderConnection};
@@ -255,7 +255,8 @@ async fn main() -> Result<()> {
                 conn.request_timeout_secs.map(Duration::from_secs),
             )?
             .with_reasoning_effort(eff.reasoning_effort.clone())
-            .with_temperature(eff.temperature, eff.temperature.is_some()),
+            .with_temperature(eff.temperature, eff.temperature.is_some())
+            .with_max_tokens(eff.max_tokens, eff.reasoning_max_tokens),
         ),
         ProviderConnection::Cli(_) => None,
     };
@@ -277,20 +278,26 @@ async fn main() -> Result<()> {
                 if cli.raw {
                     println!();
                     let mut raw_buffer = String::new();
-                    client
+                    let summary = client
                         .chat_stream_messages(&eff.model, &messages, cli.debug, |tok| {
                             raw_buffer.push_str(tok);
                             print_stream_token(tok);
                         })
                         .await?;
                     println!();
+                    check_answer(
+                        &raw_buffer,
+                        summary.finish_reason.as_deref(),
+                        client,
+                        &eff.model,
+                    )?;
                     maybe_copy_first_command(&raw_buffer, copy_enabled, cli.raw, cli.debug);
                 } else {
                     println!();
                     let mut buf = String::new();
                     let mut formatter = StreamingFormatter::new();
                     let mut writer = PrettyStreamWriter::new();
-                    client
+                    let summary = client
                         .chat_stream_messages(&eff.model, &messages, cli.debug, |tok| {
                             buf.push_str(tok);
                             if let Some(delta) = formatter.push(tok) {
@@ -304,16 +311,23 @@ async fn main() -> Result<()> {
                         writer.write(&tail);
                     }
                     println!();
+                    check_answer(&buf, summary.finish_reason.as_deref(), client, &eff.model)?;
                     maybe_copy_first_command(&buf, copy_enabled, cli.raw, cli.debug);
                 }
             } else {
                 let loading = start_loading_animation();
-                let full = client
-                    .chat_once_messages(&eff.model, &messages, cli.debug)
-                    .await?;
+                let completion = client.complete(&eff.model, &messages, cli.debug).await;
                 drop(loading);
+                let completion = completion?;
+                let full = completion.content;
                 println!();
                 print_assistant_text(&full, cli.raw);
+                check_answer(
+                    &full,
+                    completion.finish_reason.as_deref(),
+                    client,
+                    &eff.model,
+                )?;
                 maybe_copy_first_command(&full, copy_enabled, cli.raw, cli.debug);
             }
         }
@@ -390,6 +404,26 @@ async fn main() -> Result<()> {
         _ => unreachable!("Provider/client mismatch"),
     }
 
+    Ok(())
+}
+
+/// Fail when the answer is empty or was cut at the output limit, so scripts
+/// see a non-zero exit code instead of a partial answer.
+fn check_answer(
+    answer: &str,
+    finish_reason: Option<&str>,
+    client: &ChatClient,
+    model: &str,
+) -> Result<()> {
+    if is_truncated(finish_reason) {
+        return Err(truncation_error(client.max_tokens_for(model)));
+    }
+    if answer.trim().is_empty() {
+        return Err(anyhow!(
+            "The model returned an empty answer (finish_reason: {}).",
+            finish_reason.unwrap_or("none")
+        ));
+    }
     Ok(())
 }
 

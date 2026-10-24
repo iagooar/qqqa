@@ -108,6 +108,13 @@ pub struct Profile {
     /// Optional text appended to the built-in system prompt for this profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_suffix: Option<String>,
+    /// Optional output cap (tokens) for ordinary models. Default 4096.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// Optional output cap (tokens) for reasoning models; reasoning tokens count
+    /// against it. Falls back to `max_tokens`, then to 16384.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,6 +303,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -307,6 +316,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -318,6 +329,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -329,6 +342,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -340,6 +355,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -351,6 +368,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -362,6 +381,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -373,6 +394,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
         profiles.insert(
@@ -384,6 +407,8 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                max_tokens: None,
+                reasoning_max_tokens: None,
             },
         );
 
@@ -433,6 +458,8 @@ pub struct EffectiveProfile {
     pub reasoning_effort: Option<String>,
     pub temperature: Option<f32>,
     pub prompt_suffix: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub reasoning_max_tokens: Option<u32>,
 }
 
 impl EffectiveProfile {
@@ -677,6 +704,8 @@ impl Config {
                 .clone()
                 .or_else(|| self.prompt_suffix.clone())
                 .filter(|suffix| !suffix.trim().is_empty()),
+            max_tokens: profile.max_tokens,
+            reasoning_max_tokens: profile.reasoning_max_tokens,
         })
     }
 

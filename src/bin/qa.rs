@@ -204,7 +204,8 @@ async fn main() -> Result<()> {
                 conn.request_timeout_secs.map(Duration::from_secs),
             )?
             .with_reasoning_effort(eff.reasoning_effort.clone())
-            .with_temperature(eff.temperature, eff.temperature.is_some()),
+            .with_temperature(eff.temperature, eff.temperature.is_some())
+            .with_max_tokens(eff.max_tokens, eff.reasoning_max_tokens),
         ),
         ProviderConnection::Cli(_) => None,
     };
