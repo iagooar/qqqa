@@ -1,6 +1,6 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use fs_err as fs;
-use qqqa::config::{config_dir_for_home, Config, ProviderConnection};
+use qqqa::config::{Config, ProviderConnection, config_dir_for_home};
 use serial_test::serial;
 use std::path::Path;
 use tempfile::tempdir;
@@ -98,7 +98,9 @@ fn claude_cli_profile_resolves_to_cli_backend() {
 #[test]
 #[serial]
 fn gemini_profile_resolves_to_http_backend() {
-    unsafe { std::env::set_var("GEMINI_API_KEY", "test-gemini-key"); }
+    unsafe {
+        std::env::set_var("GEMINI_API_KEY", "test-gemini-key");
+    }
     let cfg = Config::default();
     let eff = cfg
         .resolve_profile(Some("gemini"), None, None)
@@ -111,16 +113,18 @@ fn gemini_profile_resolves_to_http_backend() {
         }
         _ => panic!("gemini should resolve to HTTP connection"),
     }
-    unsafe { std::env::remove_var("GEMINI_API_KEY"); }
+    unsafe {
+        std::env::remove_var("GEMINI_API_KEY");
+    }
 }
 
 #[test]
 fn cli_model_override_forces_model_when_set() {
     let mut cfg = Config::default();
-    if let Some(provider) = cfg.model_providers.get_mut("claude_cli") {
-        if let Some(cli) = provider.cli.as_mut() {
-            cli.model_override = Some("claude-custom".to_string());
-        }
+    if let Some(provider) = cfg.model_providers.get_mut("claude_cli")
+        && let Some(cli) = provider.cli.as_mut()
+    {
+        cli.model_override = Some("claude-custom".to_string());
     }
 
     let eff = cfg
@@ -393,8 +397,10 @@ fn gemini_cli_profile_resolves_to_cli_backend() {
 
 #[test]
 fn profile_prompt_suffix_overrides_global_suffix() {
-    let mut cfg = Config::default();
-    cfg.prompt_suffix = Some("global suffix".to_string());
+    let mut cfg = Config {
+        prompt_suffix: Some("global suffix".to_string()),
+        ..Default::default()
+    };
     cfg.profiles
         .get_mut("openrouter")
         .expect("openrouter profile")
@@ -407,8 +413,10 @@ fn profile_prompt_suffix_overrides_global_suffix() {
 
 #[test]
 fn global_prompt_suffix_applies_when_profile_has_none() {
-    let mut cfg = Config::default();
-    cfg.prompt_suffix = Some("global suffix".to_string());
+    let cfg = Config {
+        prompt_suffix: Some("global suffix".to_string()),
+        ..Default::default()
+    };
     let eff = cfg
         .resolve_profile(Some("openrouter"), None, None)
         .expect("profile resolves");

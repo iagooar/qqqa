@@ -392,20 +392,12 @@ async fn run_execute_command_with_allowlist(
                 let _ = handle.flush();
             }
         };
-        let mut on_chunk: Option<
+        let on_chunk: Option<
             &mut dyn for<'chunk> FnMut(qqqa::tools::execute_command::StreamChunk<'chunk>),
         > = Some(&mut stream_printer);
         let streaming_enabled = on_chunk.is_some();
         let exec_args = sanitize_execute_args(original_args.clone(), &base_dir, debug);
-        match qqqa::tools::execute_command::run(
-            exec_args,
-            auto_yes,
-            debug,
-            shell,
-            on_chunk.as_deref_mut(),
-        )
-        .await
-        {
+        match qqqa::tools::execute_command::run(exec_args, auto_yes, debug, shell, on_chunk).await {
             Ok(summary) => {
                 return Ok(ExecuteCommandResult {
                     summary,
@@ -500,10 +492,10 @@ fn sanitize_cwd_path(requested: Option<&str>, base_dir: &Path) -> (PathBuf, bool
     }
     let path = Path::new(trimmed);
     if path.is_absolute() {
-        if let Ok(canon) = std::fs::canonicalize(path) {
-            if canon.starts_with(base_dir) {
-                return (canon, false);
-            }
+        if let Ok(canon) = std::fs::canonicalize(path)
+            && canon.starts_with(base_dir)
+        {
+            return (canon, false);
         }
         return (base, true);
     }

@@ -43,10 +43,10 @@ fn classify_windows_shell(
     has_prompt: bool,
     has_pwsh_markers: bool,
 ) -> ShellKind {
-    if let Some(lower) = shell_env_lower {
-        if lower.contains("bash") || lower.contains("sh") {
-            return ShellKind::Posix;
-        }
+    if let Some(lower) = shell_env_lower
+        && (lower.contains("bash") || lower.contains("sh"))
+    {
+        return ShellKind::Posix;
     }
 
     if !has_prompt && has_pwsh_markers {

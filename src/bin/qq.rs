@@ -275,7 +275,7 @@ async fn main() -> Result<()> {
         (ProviderConnection::Http(_), Some(client)) => {
             if !cli.no_stream {
                 if cli.raw {
-                    println!("");
+                    println!();
                     let mut raw_buffer = String::new();
                     client
                         .chat_stream_messages(&eff.model, &messages, cli.debug, |tok| {
@@ -286,7 +286,7 @@ async fn main() -> Result<()> {
                     println!();
                     maybe_copy_first_command(&raw_buffer, copy_enabled, cli.raw, cli.debug);
                 } else {
-                    println!("");
+                    println!();
                     let mut buf = String::new();
                     let mut formatter = StreamingFormatter::new();
                     let mut writer = PrettyStreamWriter::new();
@@ -298,12 +298,12 @@ async fn main() -> Result<()> {
                             }
                         })
                         .await?;
-                    if let Some(tail) = formatter.flush() {
-                        if !tail.is_empty() {
-                            writer.write(&tail);
-                        }
+                    if let Some(tail) = formatter.flush()
+                        && !tail.is_empty()
+                    {
+                        writer.write(&tail);
                     }
-                    println!("");
+                    println!();
                     maybe_copy_first_command(&buf, copy_enabled, cli.raw, cli.debug);
                 }
             } else {
@@ -312,7 +312,7 @@ async fn main() -> Result<()> {
                     .chat_once_messages(&eff.model, &messages, cli.debug)
                     .await?;
                 drop(loading);
-                println!("");
+                println!();
                 print_assistant_text(&full, cli.raw);
                 maybe_copy_first_command(&full, copy_enabled, cli.raw, cli.debug);
             }
@@ -337,7 +337,7 @@ async fn main() -> Result<()> {
             let streaming_enabled = !cli.no_stream && cli_conn.engine.supports_streaming();
 
             if streaming_enabled {
-                println!("");
+                println!();
                 if cli.raw {
                     let mut collected = String::new();
                     let fallback = run_cli_completion_streaming(make_request(), |tok| {
@@ -348,7 +348,7 @@ async fn main() -> Result<()> {
                     if collected.is_empty() {
                         collected = fallback;
                     }
-                    println!("");
+                    println!();
                     maybe_copy_first_command(&collected, copy_enabled, cli.raw, cli.debug);
                 } else {
                     let mut formatter = StreamingFormatter::new();
@@ -361,15 +361,15 @@ async fn main() -> Result<()> {
                         }
                     })
                     .await?;
-                    if let Some(tail) = formatter.flush() {
-                        if !tail.is_empty() {
-                            writer.write(&tail);
-                        }
+                    if let Some(tail) = formatter.flush()
+                        && !tail.is_empty()
+                    {
+                        writer.write(&tail);
                     }
                     if collected.is_empty() {
                         collected = fallback;
                     }
-                    println!("");
+                    println!();
                     maybe_copy_first_command(&collected, copy_enabled, cli.raw, cli.debug);
                 }
             } else {
@@ -382,7 +382,7 @@ async fn main() -> Result<()> {
                 let loading = start_loading_animation();
                 let response = run_cli_completion(make_request()).await?;
                 drop(loading);
-                println!("");
+                println!();
                 print_assistant_text(&response, cli.raw);
                 maybe_copy_first_command(&response, copy_enabled, cli.raw, cli.debug);
             }
@@ -412,7 +412,7 @@ where
     args.into_iter()
         .enumerate()
         .map(|(idx, arg)| {
-            if idx > 0 && arg == OsString::from("-ncc") {
+            if idx > 0 && arg == "-ncc" {
                 OsString::from("--ncc")
             } else {
                 arg
@@ -508,7 +508,7 @@ fn unescape_entities(input: &str) -> String {
 }
 
 fn print_copy_notice(raw_output: bool) {
-    println!("");
+    println!();
     if raw_output {
         println!("<info>Copied first command to clipboard</info>");
     } else {

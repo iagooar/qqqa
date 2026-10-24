@@ -78,10 +78,8 @@ pub async fn run(
             }
         }
     }
-    if requires_manual_confirmation || !auto_yes {
-        if !prompt_yes_no("Execute? [y/N]: ")? {
-            return Err(anyhow!("Execution canceled by user"));
-        }
+    if (requires_manual_confirmation || !auto_yes) && !prompt_yes_no("Execute? [y/N]: ")? {
+        return Err(anyhow!("Execution canceled by user"));
     }
 
     let child = spawn_child(&args.command, cwd, shell, debug)?;

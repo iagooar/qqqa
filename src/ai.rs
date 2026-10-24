@@ -453,10 +453,10 @@ impl ChatClient {
                         }
                         if let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(rest) {
                             for c in parsed.choices.into_iter() {
-                                if let Some(delta) = c.delta {
-                                    if let Some(token) = delta.content {
-                                        on_token(&token);
-                                    }
+                                if let Some(delta) = c.delta
+                                    && let Some(token) = delta.content
+                                {
+                                    on_token(&token);
                                 }
                             }
                         } else if debug {
@@ -531,10 +531,10 @@ impl ChatClient {
                         }
                         if let Ok(parsed) = serde_json::from_str::<ChatStreamChunk>(rest) {
                             for c in parsed.choices.into_iter() {
-                                if let Some(delta) = c.delta {
-                                    if let Some(token) = delta.content {
-                                        on_token(&token);
-                                    }
+                                if let Some(delta) = c.delta
+                                    && let Some(token) = delta.content
+                                {
+                                    on_token(&token);
                                 }
                             }
                         } else if debug {
@@ -911,16 +911,16 @@ mod cli_backend {
                     }
                     match parse_claude_stream_line(trimmed) {
                         Ok((token, result_text)) => {
-                            if let Some(t) = token {
-                                if !t.is_empty() {
-                                    aggregated.push_str(&t);
-                                    on_token(&t);
-                                }
+                            if let Some(t) = token
+                                && !t.is_empty()
+                            {
+                                aggregated.push_str(&t);
+                                on_token(&t);
                             }
-                            if let Some(res) = result_text {
-                                if !res.trim().is_empty() {
-                                    fallback = Some(res);
-                                }
+                            if let Some(res) = result_text
+                                && !res.trim().is_empty()
+                            {
+                                fallback = Some(res);
                             }
                         }
                         Err(e) => {
@@ -1059,10 +1059,7 @@ mod cli_backend {
 
     async fn take_stderr_output(stderr: &mut Option<tokio::task::JoinHandle<String>>) -> String {
         if let Some(handle) = stderr.take() {
-            match handle.await {
-                Ok(text) => text,
-                Err(_) => String::new(),
-            }
+            handle.await.unwrap_or_default()
         } else {
             String::new()
         }
@@ -1101,16 +1098,13 @@ mod cli_backend {
             }
             match serde_json::from_str::<CodexEvent>(trimmed) {
                 Ok(event) => {
-                    if event.event_type == "item.completed" {
-                        if let Some(item) = event.item {
-                            if item.item_type == "agent_message" {
-                                if let Some(text) = item.text {
-                                    if !text.trim().is_empty() {
-                                        messages.push(text);
-                                    }
-                                }
-                            }
-                        }
+                    if event.event_type == "item.completed"
+                        && let Some(item) = event.item
+                        && item.item_type == "agent_message"
+                        && let Some(text) = item.text
+                        && !text.trim().is_empty()
+                    {
+                        messages.push(text);
                     }
                 }
                 Err(_) => {
@@ -1135,10 +1129,10 @@ mod cli_backend {
             return Err(anyhow!("CLI provider returned error JSON: {}", err));
         }
 
-        if let Some(response) = value.get("response") {
-            if let Some(text) = extract_text(response) {
-                return Ok(text);
-            }
+        if let Some(response) = value.get("response")
+            && let Some(text) = extract_text(response)
+        {
+            return Ok(text);
         }
 
         if let Some(text) = extract_text(&value) {
@@ -1154,10 +1148,10 @@ mod cli_backend {
         let value = parse_single_json_value(stdout)
             .with_context(|| "CLI provider returned non-JSON output")?;
 
-        if let Some(result_field) = value.get("result") {
-            if let Some(text) = extract_text(result_field) {
-                return Ok(text);
-            }
+        if let Some(result_field) = value.get("result")
+            && let Some(text) = extract_text(result_field)
+        {
+            return Ok(text);
         }
 
         if let Some(text) = extract_text(&value) {
@@ -1201,23 +1195,19 @@ mod cli_backend {
         let mut result_text = None;
 
         if env.event_type == "stream_event" {
-            if let Some(event) = env.event {
-                if event.event_type == "content_block_delta" {
-                    if let Some(delta) = event.delta {
-                        if let Some(text) = delta.text {
-                            if !text.is_empty() {
-                                token = Some(text);
-                            }
-                        }
-                    }
-                }
+            if let Some(event) = env.event
+                && event.event_type == "content_block_delta"
+                && let Some(delta) = event.delta
+                && let Some(text) = delta.text
+                && !text.is_empty()
+            {
+                token = Some(text);
             }
-        } else if env.event_type == "result" {
-            if let Some(result) = env.result {
-                if let Some(text) = extract_text(&result) {
-                    result_text = Some(text);
-                }
-            }
+        } else if env.event_type == "result"
+            && let Some(result) = env.result
+            && let Some(text) = extract_text(&result)
+        {
+            result_text = Some(text);
         }
 
         Ok((token, result_text))
@@ -1225,10 +1215,10 @@ mod cli_backend {
 
     fn parse_single_json_value(stdout: &str) -> Result<Value> {
         let trimmed = stdout.trim();
-        if !trimmed.is_empty() {
-            if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-                return Ok(value);
-            }
+        if !trimmed.is_empty()
+            && let Ok(value) = serde_json::from_str::<Value>(trimmed)
+        {
+            return Ok(value);
         }
 
         for line in stdout.lines().rev() {
@@ -1267,16 +1257,16 @@ mod cli_backend {
                 }
             }
             Value::Object(map) => {
-                if let Some(text) = map.get("text").and_then(|t| t.as_str()) {
-                    if !text.trim().is_empty() {
-                        return Some(text.to_string());
-                    }
+                if let Some(text) = map.get("text").and_then(|t| t.as_str())
+                    && !text.trim().is_empty()
+                {
+                    return Some(text.to_string());
                 }
                 for key in ["content", "messages", "output_text", "result", "output"] {
-                    if let Some(val) = map.get(key) {
-                        if let Some(text) = extract_text(val) {
-                            return Some(text);
-                        }
+                    if let Some(val) = map.get(key)
+                        && let Some(text) = extract_text(val)
+                    {
+                        return Some(text);
                     }
                 }
                 None
@@ -1407,8 +1397,7 @@ mod tests {
         let payload = r#"{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Reasoning"}}
 {"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"First"}}
 {"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Second"}}"#;
-        let merged = payload.replace('\n', "\n");
-        let parsed = parse_codex_response_for_test(&merged).expect("parse");
+        let parsed = parse_codex_response_for_test(payload).expect("parse");
         assert_eq!(parsed, "First\n\nSecond");
     }
 

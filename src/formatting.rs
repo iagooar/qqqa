@@ -160,12 +160,12 @@ impl XmlishStreamingParser {
             out.push('\n');
             return;
         }
-        if raw_trim.starts_with('/') {
-            let name = raw_trim[1..].trim().to_ascii_lowercase();
-            if let Some(tag) = tag_from_name(&name) {
-                if let Some(pos) = self.stack.iter().rposition(|t| *t == tag) {
-                    self.stack.remove(pos);
-                }
+        if let Some(rest) = raw_trim.strip_prefix('/') {
+            let name = rest.trim().to_ascii_lowercase();
+            if let Some(tag) = tag_from_name(&name)
+                && let Some(pos) = self.stack.iter().rposition(|t| *t == tag)
+            {
+                self.stack.remove(pos);
             }
             return;
         }
@@ -421,8 +421,9 @@ mod tests {
                 printed.push_str(&tail);
             }
             let final_render = fmt.rendered();
-            let expected =
-                render_xmlish_to_ansi("<cmd>ffmpeg -i input.mov output.mp4</cmd> <info>done</info>");
+            let expected = render_xmlish_to_ansi(
+                "<cmd>ffmpeg -i input.mov output.mp4</cmd> <info>done</info>",
+            );
             assert_eq!(final_render, expected);
             assert_eq!(printed, expected);
         });
