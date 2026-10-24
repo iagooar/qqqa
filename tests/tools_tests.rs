@@ -171,7 +171,8 @@ async fn execute_command_runs_and_captures_output() {
         None,
     )
     .await
-    .expect("execute_command should succeed");
+    .expect("execute_command should succeed")
+    .summary;
     assert!(res.contains("stdout"));
     assert!(res.contains("test123"));
 }
@@ -205,6 +206,7 @@ async fn execute_command_honors_pty_force_flag() {
         )
         .await
         .expect("baseline execute_command should succeed")
+        .summary
     };
     assert!(baseline.contains("notty"));
 
@@ -222,6 +224,7 @@ async fn execute_command_honors_pty_force_flag() {
         )
         .await
         .expect("execute_command with forced PTY should succeed")
+        .summary
     };
 
     assert!(
@@ -260,6 +263,7 @@ async fn execute_command_respects_disable_flag() {
         )
         .await
         .expect("forced PTY should succeed")
+        .summary
     };
 
     let res = {
@@ -276,6 +280,7 @@ async fn execute_command_respects_disable_flag() {
         )
         .await
         .expect("execute_command fallback should succeed")
+        .summary
     };
 
     assert!(forced.contains("tty"));
@@ -317,7 +322,8 @@ async fn execute_command_streams_stdout_chunks() {
         Some(&mut printer),
     )
     .await
-    .expect("execute_command should stream output");
+    .expect("execute_command should stream output")
+    .summary;
 
     assert!(summary.contains("first"));
     assert!(summary.contains("second"));

@@ -297,3 +297,307 @@ fn qq_reports_other_stdout_write_errors() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("failed to write output"));
 }
+
+/// What one qq run with a given stdin did.
+struct StdinRun {
+    status: std::process::ExitStatus,
+    stderr: String,
+    /// Requests whose body contained the needle.
+    needle_hits: usize,
+    /// All requests.
+    total_hits: usize,
+}
+
+fn qq_with_stdin(stdin: Stdio, extra: &[&str], needle: &str) -> StdinRun {
+    let server = MockServer::start();
+    let with_needle = server.mock(|when, then| {
+        when.method(POST)
+            .path("/chat/completions")
+            .body_contains(needle);
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(sse(&["ok"]));
+    });
+    let any = server.mock(|when, then| {
+        when.method(POST).path("/chat/completions");
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(sse(&["ok"]));
+    });
+    let home = tempdir().unwrap();
+    let base = server.base_url();
+    let mut args = vec!["-n", "-r"];
+    args.extend_from_slice(extra);
+    args.extend_from_slice(&["--api-base", &base, "question"]);
+    let out = Command::new(assert_cmd::cargo::cargo_bin!("qq"))
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", "")
+        .env("OPENROUTER_API_KEY", "test")
+        .current_dir(home.path())
+        .args(&args)
+        .stdin(stdin)
+        .output()
+        .unwrap();
+    StdinRun {
+        status: out.status,
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        needle_hits: with_needle.hits(),
+        total_hits: with_needle.hits() + any.hits(),
+    }
+}
+
+fn stdin_file(contents: &[u8]) -> (tempfile::TempDir, Stdio) {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("in.txt");
+    std::fs::write(&path, contents).unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    (dir, Stdio::from(file))
+}
+
+#[test]
+fn qq_reads_stdin_from_a_file() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let (_dir, stdin) = stdin_file(b"MARKER-FROM-FILE\n");
+    let run = qq_with_stdin(stdin, &[], "MARKER-FROM-FILE");
+    assert!(run.status.success(), "{}", run.stderr);
+    assert_eq!(run.needle_hits, 1);
+}
+
+#[test]
+fn qq_no_stdin_ignores_piped_input() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let (_dir, stdin) = stdin_file(b"MARKER-IGNORED\n");
+    let run = qq_with_stdin(stdin, &["--no-stdin"], "MARKER-IGNORED");
+    assert!(run.status.success(), "{}", run.stderr);
+    assert_eq!((run.needle_hits, run.total_hits), (0, 1));
+}
+
+#[test]
+fn qq_does_not_read_dev_null_or_wait_on_it() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let run = qq_with_stdin(Stdio::null(), &[], "Input from pipe");
+    assert!(run.status.success(), "{}", run.stderr);
+    assert_eq!((run.needle_hits, run.total_hits), (0, 1));
+}
+
+#[test]
+fn qq_no_stdin_does_not_wait_on_an_open_pipe() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let server = MockServer::start();
+    mock_reply(&server, "text/event-stream", &sse(&["ok"]));
+    let home = tempdir().unwrap();
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin!("qq"))
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", "")
+        .env("OPENROUTER_API_KEY", "test")
+        .current_dir(home.path())
+        .args([
+            "-n",
+            "-r",
+            "--no-stdin",
+            "--api-base",
+            &server.base_url(),
+            "x",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Hold the write end open and never write, as a wrapper or editor might.
+    let _held_stdin = child.stdin.take();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("qq --no-stdin waited on an open stdin pipe");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert!(status.success());
+}
+
+#[test]
+fn qq_cuts_long_stdin_with_a_notice() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let max = qqqa::input::MAX_STDIN_BYTES;
+    let big = vec![b'x'; max + 50_000];
+    let (_dir, stdin) = stdin_file(&big);
+    let too_long = "x".repeat(max + 1);
+    let run = qq_with_stdin(stdin, &[], &too_long);
+    assert!(run.status.success(), "{}", run.stderr);
+    assert!(
+        run.stderr.contains("only the first 256 KiB"),
+        "{}",
+        run.stderr
+    );
+    assert_eq!((run.needle_hits, run.total_hits), (0, 1));
+}
+
+#[test]
+fn qq_rejects_binary_stdin() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let (_dir, stdin) = stdin_file(b"\x7fELF\x00\x02\x01");
+    let run = qq_with_stdin(stdin, &[], "ELF");
+    assert!(!run.status.success());
+    assert!(run.stderr.contains("binary"), "{}", run.stderr);
+    assert_eq!(run.total_hits, 0);
+}
+
+fn tool_call_reply(name: &str, arguments: serde_json::Value) -> String {
+    serde_json::json!({"choices":[{"message":{"content":null,"tool_calls":[{"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]},"finish_reason":"tool_calls"}]}).to_string()
+}
+
+/// Run `qa -y` against a mock that replies with `reply`; returns (code, stdout, stderr).
+fn qa_with_reply(reply: &str) -> (Option<i32>, String, String) {
+    let server = MockServer::start();
+    mock_reply(&server, "application/json", reply);
+    let home = tempdir().unwrap();
+    let out = cargo_bin_cmd!("qa")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", "")
+        .env("OPENROUTER_API_KEY", "test")
+        .current_dir(home.path())
+        .args(["-n", "-y", "--api-base", &server.base_url(), "do it"])
+        .write_stdin("")
+        .output()
+        .unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn qa_succeeds_and_shows_status_for_a_passing_command() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let reply = tool_call_reply(
+        "execute_command",
+        serde_json::json!({"command":"echo qa-ok"}),
+    );
+    let (code, stdout, stderr) = qa_with_reply(&reply);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("qa-ok"));
+    assert!(
+        stderr.contains("[tool:execute_command] exit status 0"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn qa_copies_the_exit_code_of_a_failing_command() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    // grep exits 2 for a missing file on both GNU and BSD.
+    let reply = tool_call_reply(
+        "execute_command",
+        serde_json::json!({"command":"grep x qqqa-no-such-file"}),
+    );
+    let (code, _, stderr) = qa_with_reply(&reply);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("[tool:execute_command] exit status 2"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn qa_fails_when_a_tool_fails() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let reply = tool_call_reply("read_file", serde_json::json!({"path":"no-such-file.txt"}));
+    let (code, stdout, stderr) = qa_with_reply(&reply);
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains("[tool:read_file:error]"), "{stderr}");
+    assert!(
+        !stdout.contains("error"),
+        "errors must not go to stdout: {stdout}"
+    );
+}
+
+#[test]
+fn qa_fails_on_an_unknown_tool() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let reply = tool_call_reply("delete_everything", serde_json::json!({}));
+    let (code, _, stderr) = qa_with_reply(&reply);
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains("Unknown tool call"), "{stderr}");
+}
+
+fn qa_reads_note(reply: &str) -> (Option<i32>, String, String) {
+    let server = MockServer::start();
+    mock_reply(&server, "application/json", reply);
+    let home = tempdir().unwrap();
+    std::fs::write(home.path().join("note.txt"), "note-contents").unwrap();
+    let out = cargo_bin_cmd!("qa")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", "")
+        .env("OPENROUTER_API_KEY", "test")
+        .current_dir(home.path())
+        .args(["-n", "--api-base", &server.base_url(), "read note.txt"])
+        .write_stdin("")
+        .output()
+        .unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn qa_accepts_a_fenced_json_reply() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let content = "```json\n{\"tool\":\"read_file\",\"arguments\":{\"path\":\"note.txt\"}}\n```";
+    let reply =
+        serde_json::json!({"choices":[{"message":{"content":content},"finish_reason":"stop"}]});
+    let (code, stdout, stderr) = qa_reads_note(&reply.to_string());
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("note-contents"), "{stdout}");
+}
+
+#[test]
+fn qa_accepts_object_arguments_without_a_type() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let reply = r#"{"choices":[{"message":{"content":null,"tool_calls":[{"function":{"name":"read_file","arguments":{"path":"note.txt"}}}]},"finish_reason":"tool_calls"}]}"#;
+    let (code, stdout, stderr) = qa_reads_note(reply);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("note-contents"), "{stdout}");
+}
+
+#[test]
+fn qa_prints_an_explanation_sent_through_the_json_tool() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let reply = tool_call_reply("json", serde_json::json!({"reason":"I will not run that."}));
+    let (code, stdout, stderr) = qa_reads_note(&reply);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("I will not run that."), "{stdout}");
+}

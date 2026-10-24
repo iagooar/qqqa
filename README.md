@@ -212,6 +212,7 @@ Example override in `~/.qq/config.json`:
 - Optional flag: `no_emoji` (unset by default). Set via `qq --no-fun` or `qa --no-fun`.
 - Optional auto-copy: `copy_first_command` (unset/false by default). Enable during `qq --init`, by running `qq --enable-auto-copy`, or by editing `~/.qq/config.json` so qq copies the first `<cmd>` block to your clipboard. Turn it off with `qq --disable-auto-copy`. Override per run with `--copy-command`/`--cc` or `--no-copy-command`/`--ncc` (also available as `-ncc`).
 - Per-run control: `--no-stream` forces qq to wait for the full response before printing; streaming is the default.
+- Piped input: qq and qa read stdin only when it is a pipe or a file (not a terminal, `/dev/null` or a socket), up to 256 KiB (longer input is cut, with a notice on stderr). Binary input is rejected. `--no-stdin` ignores stdin entirely, for loops and wrappers that leave stdin open.
 - Errors are never silent: if the provider reports an error inside the stream, the stream ends before the provider finishes, or the answer is empty, `qq` prints what it received and exits non-zero.
 
 ### Terminal history
@@ -245,6 +246,9 @@ printf '%s\n' "This is a sample context. My code is 4242" | qq "What is my code"
 
 # pipe the question itself
 printf '%s\n' "Show me the full contents of this directory" | qq
+
+# inside a loop that reads from a file, keep qq from consuming the loop's input
+while read -r f; do qq --no-stdin "explain $f"; done < files.txt
 
 # raw text (no ANSI formatting)
 qq -r "explain sed vs awk"
@@ -310,7 +314,7 @@ The agent will propose a safe command like `yt-dlp -x --audio-format mp3 URL`, s
 
 ### qa - do a single step with tools
 
-`qa` can either answer in plain text or request one tool call in JSON. Supported tools:
+`qa` can either answer in plain text or request one tool call in JSON (a bare object, or one inside a Markdown code fence; `arguments` may be an object or a JSON string). Supported tools:
 
 - `read_file` with `{ "path": string }`
 - `write_file` with `{ "path": string, "content": string }`
@@ -347,7 +351,7 @@ qa --no-fun "format and lint the repo"
 qa -y "count lines across *.rs"
 ```
 
-When qa runs a command while stdout is a terminal, output streams live; the structured `[tool:execute_command]` summary still prints afterward for easy copying.
+When qa runs a command, its output streams live (stdout to stdout, stderr to stderr). Afterwards qa prints `[tool:execute_command] exit status N` on stderr and exits with the same code N, so scripts can check `$?`. If a tool fails (a file cannot be read, a command is refused or canceled), qa prints `[tool:<name>:error] …` on stderr and exits 1.
 
 `execute_command` prints the proposed command and asks for confirmation. It warns if the working directory is outside your home. Use `-y` to auto approve in trusted workflows.
 

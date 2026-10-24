@@ -9,8 +9,9 @@ use qqqa::history::read_recent_history;
 use qqqa::perms;
 use qqqa::prompt::{build_qa_system_prompt, build_qa_user_message, coalesce_prompt_inputs};
 use qqqa::shell::{ShellKind, detect_shell, shell_hint_for_prompt};
-use qqqa::tools::{ToolCall, parse_tool_call};
-use std::io::{IsTerminal, Read, Stdin, Write};
+use qqqa::tools::execute_command::CommandOutput;
+use qqqa::tools::{Reply, ToolCall, parse_reply_text, resolve_tool_call};
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -40,6 +41,10 @@ struct Cli {
     /// Disable terminal history context
     #[arg(short = 'n', long = "no-history", action = ArgAction::SetTrue)]
     no_history: bool,
+
+    /// Ignore stdin even when it is a pipe or a file (for loops and wrappers)
+    #[arg(long = "no-stdin", action = ArgAction::SetTrue)]
+    no_stdin: bool,
     /// Include terminal history context even if disabled in config
     #[arg(long = "history", action = ArgAction::SetTrue, conflicts_with = "no_history")]
     history: bool,
@@ -86,11 +91,10 @@ async fn main() -> Result<()> {
     }
 
     // Handle stdin piping for extra context.
-    let stdin_is_tty = std::io::stdin().is_terminal();
-    let stdin_block = if !stdin_is_tty {
-        Some(read_all_stdin(std::io::stdin())?)
-    } else {
+    let stdin_block = if cli.no_stdin {
         None
+    } else {
+        qqqa::input::read_piped_stdin()?
     };
 
     let prepared = coalesce_prompt_inputs(cli.task.join(" "), stdin_block);
@@ -306,63 +310,76 @@ async fn main() -> Result<()> {
         _ => unreachable!("Provider/client mismatch"),
     };
 
-    match assistant_reply {
+    let reply = match assistant_reply {
         AssistantReply::ToolCall {
             name,
             arguments_json,
         } => {
-            let handled = execute_tool_call(
-                name.as_str(),
-                &arguments_json,
-                cli.yes,
-                cli.debug,
-                shell_kind,
-                &mut cfg,
-                &path,
-            )
-            .await?;
-            if !handled {
-                qqqa::outln!("Unknown tool call: {}", name);
+            if cli.debug {
+                eprintln!("[debug] tool call '{}' args: {}", name, arguments_json);
             }
+            resolve_tool_call(&name, serde_json::Value::String(arguments_json))?
         }
         AssistantReply::Content(assistant) => {
             if cli.debug {
                 eprintln!("[debug] assistant raw: {}", assistant);
             }
-            // Try to parse as a tool call per our plain-JSON protocol; else print the answer.
-            match parse_tool_call(assistant.trim()) {
-                Ok(call) => match call {
-                    ToolCall::ReadFile(args) => match qqqa::tools::read_file::run(args) {
-                        Ok(content) => print_tool_result("read_file", &content),
-                        Err(e) => print_tool_error("read_file", &e.to_string()),
-                    },
-                    ToolCall::WriteFile(args) => match qqqa::tools::write_file::run(args) {
-                        Ok(summary) => print_tool_result("write_file", &summary),
-                        Err(e) => print_tool_error("write_file", &e.to_string()),
-                    },
-                    ToolCall::ExecuteCommand(args) => match run_execute_command_with_allowlist(
-                        args, cli.yes, cli.debug, shell_kind, &mut cfg, &path,
-                    )
-                    .await
-                    {
-                        Ok(result) => print_execute_command_result(&result, cli.debug),
-                        Err(e) => print_tool_error("execute_command", &e.to_string()),
-                    },
-                },
-                Err(_) => {
-                    qqqa::outln!("{}", assistant.trim_end());
-                }
-            }
+            // A bare or fenced `{ "tool": .., "arguments": .. }` is a tool call; else the answer.
+            parse_reply_text(&assistant)?
         }
-    }
+    };
+    let exit_code = match reply {
+        Reply::Tool(call) => run_tool(call, cli.yes, cli.debug, shell_kind, &mut cfg, &path).await,
+        Reply::Text(text) => {
+            qqqa::outln!("{}", text.trim_end());
+            0
+        }
+    };
 
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-struct ExecuteCommandResult {
-    summary: String,
-    streamed_live: bool,
+/// Run one tool call and return qa's exit code: the command's own exit code
+/// for `execute_command`, 1 when a tool fails, else 0. Results go to stdout;
+/// errors and the command's exit status go to stderr.
+async fn run_tool(
+    call: ToolCall,
+    auto_yes: bool,
+    debug: bool,
+    shell: ShellKind,
+    cfg: &mut Config,
+    cfg_path: &Path,
+) -> i32 {
+    match call {
+        ToolCall::ReadFile(args) => match qqqa::tools::read_file::run(args) {
+            Ok(content) => {
+                print_tool_result("read_file", &content);
+                0
+            }
+            Err(e) => print_tool_error("read_file", &e.to_string()),
+        },
+        ToolCall::WriteFile(args) => match qqqa::tools::write_file::run(args) {
+            Ok(summary) => {
+                print_tool_result("write_file", &summary);
+                0
+            }
+            Err(e) => print_tool_error("write_file", &e.to_string()),
+        },
+        ToolCall::ExecuteCommand(args) => {
+            match run_execute_command_with_allowlist(args, auto_yes, debug, shell, cfg, cfg_path)
+                .await
+            {
+                Ok(output) => {
+                    eprintln!("[tool:execute_command] exit status {}", output.exit_code);
+                    output.exit_code
+                }
+                Err(e) => print_tool_error("execute_command", &e.to_string()),
+            }
+        }
+    }
 }
 
 async fn run_execute_command_with_allowlist(
@@ -372,7 +389,7 @@ async fn run_execute_command_with_allowlist(
     shell: ShellKind,
     cfg: &mut Config,
     cfg_path: &Path,
-) -> Result<ExecuteCommandResult> {
+) -> Result<CommandOutput> {
     let mut base_dir = std::env::current_dir().context("Failed to read current directory")?;
     if let Ok(canon) = base_dir.canonicalize() {
         base_dir = canon;
@@ -396,15 +413,9 @@ async fn run_execute_command_with_allowlist(
         let on_chunk: Option<
             &mut dyn for<'chunk> FnMut(qqqa::tools::execute_command::StreamChunk<'chunk>),
         > = Some(&mut stream_printer);
-        let streaming_enabled = on_chunk.is_some();
         let exec_args = sanitize_execute_args(original_args.clone(), &base_dir, debug);
         match qqqa::tools::execute_command::run(exec_args, auto_yes, debug, shell, on_chunk).await {
-            Ok(summary) => {
-                return Ok(ExecuteCommandResult {
-                    summary,
-                    streamed_live: streaming_enabled,
-                });
-            }
+            Ok(output) => return Ok(output),
             Err(err) => {
                 if let Some(program) = err
                     .downcast_ref::<perms::CommandNotAllowedError>()
@@ -519,126 +530,15 @@ fn sanitize_cwd_path(requested: Option<&str>, base_dir: &Path) -> (PathBuf, bool
     (base_dir.join(relative), false)
 }
 
-async fn execute_tool_call(
-    name: &str,
-    arguments_json: &str,
-    auto_yes: bool,
-    debug: bool,
-    shell: ShellKind,
-    cfg: &mut Config,
-    cfg_path: &Path,
-) -> Result<bool> {
-    if debug {
-        eprintln!("[debug] tool call '{}' args: {}", name, arguments_json);
-    }
-    let mut current_name = name.to_string();
-    let mut current_args = arguments_json.to_string();
-
-    loop {
-        match current_name.as_str() {
-            "read_file" => {
-                let normalized = normalize_tool_arguments(&current_args)?;
-                let args: qqqa::tools::read_file::Args = serde_json::from_str(&normalized)
-                    .map_err(|e| anyhow!("Failed to parse read_file args: {}", e))?;
-                match qqqa::tools::read_file::run(args) {
-                    Ok(content) => print_tool_result("read_file", &content),
-                    Err(e) => print_tool_error("read_file", &e.to_string()),
-                }
-                return Ok(true);
-            }
-            "write_file" => {
-                let normalized = normalize_tool_arguments(&current_args)?;
-                let args: qqqa::tools::write_file::Args = serde_json::from_str(&normalized)
-                    .map_err(|e| anyhow!("Failed to parse write_file args: {}", e))?;
-                match qqqa::tools::write_file::run(args) {
-                    Ok(summary) => print_tool_result("write_file", &summary),
-                    Err(e) => print_tool_error("write_file", &e.to_string()),
-                }
-                return Ok(true);
-            }
-            "execute_command" => {
-                let normalized = normalize_tool_arguments(&current_args)?;
-                let args: qqqa::tools::execute_command::Args = serde_json::from_str(&normalized)
-                    .map_err(|e| anyhow!("Failed to parse execute_command args: {}", e))?;
-                match run_execute_command_with_allowlist(
-                    args, auto_yes, debug, shell, cfg, cfg_path,
-                )
-                .await
-                {
-                    Ok(result) => print_execute_command_result(&result, debug),
-                    Err(e) => print_tool_error("execute_command", &e.to_string()),
-                }
-                return Ok(true);
-            }
-            "json" => {
-                let inner: serde_json::Value = serde_json::from_str(&current_args)
-                    .map_err(|e| anyhow!("Failed to parse json wrapper: {}", e))?;
-                let tool_name = inner
-                    .get("tool")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow!("Wrapped json tool missing 'tool' field"))?;
-                let arguments = inner
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({}));
-                current_name = tool_name.to_string();
-                current_args = serde_json::to_string(&arguments)?;
-                continue;
-            }
-            _ => return Ok(false),
-        }
-    }
-}
-
 fn print_tool_result(tool: &str, result: &str) {
     qqqa::outln!("[tool:{}]", tool);
     qqqa::outln!("{}", result.trim_end());
 }
 
-fn print_tool_error(tool: &str, err: &str) {
-    qqqa::outln!("[tool:{}:error] {}", tool, err);
-}
-
-fn normalize_tool_arguments(raw: &str) -> Result<String> {
-    // If the raw blob already matches our expected schema, leave it alone.
-    // Otherwise, detect legacy wrappers of the shape {"tool": ..., "arguments": {...}}
-    // and unwrap them so serde can deserialize into the tool arg structs.
-    #[derive(serde::Deserialize)]
-    struct LegacyWrapper {
-        tool: Option<String>,
-        arguments: serde_json::Value,
-    }
-
-    let trimmed = raw.trim_start();
-    if !trimmed.starts_with('{') {
-        return Ok(raw.to_string());
-    }
-
-    match serde_json::from_str::<LegacyWrapper>(trimmed) {
-        Ok(wrapper) if wrapper.tool.is_some() => Ok(wrapper.arguments.to_string()),
-        _ => Ok(raw.to_string()),
-    }
-}
-
-fn print_execute_command_result(result: &ExecuteCommandResult, debug: bool) {
-    if let Some(msg) = format_execute_command_result(result, debug) {
-        print_tool_result("execute_command", &msg);
-    }
-}
-
-fn format_execute_command_result(result: &ExecuteCommandResult, debug: bool) -> Option<String> {
-    let _ = debug;
-    if result.streamed_live {
-        None
-    } else {
-        Some(result.summary.trim_end().to_string())
-    }
-}
-
-fn read_all_stdin(mut stdin: Stdin) -> Result<String> {
-    let mut buf = String::new();
-    stdin.read_to_string(&mut buf)?;
-    Ok(buf)
+/// Report a failed tool on stderr; returns qa's exit code for it.
+fn print_tool_error(tool: &str, err: &str) -> i32 {
+    eprintln!("[tool:{}:error] {}", tool, err);
+    1
 }
 
 #[cfg(test)]
@@ -646,76 +546,6 @@ mod tests {
     use super::*;
     use std::path::Path;
     use tempfile::tempdir;
-
-    #[tokio::test]
-    async fn execute_tool_call_handles_json_wrapper() {
-        let dir = tempdir().unwrap();
-        unsafe {
-            std::env::set_var("HOME", dir.path());
-        }
-        std::env::set_current_dir(dir.path()).unwrap();
-
-        let file_path = dir.path().join("hello.txt");
-        std::fs::write(&file_path, "hi there").unwrap();
-
-        let mut cfg = Config::default();
-        let cfg_path = dir.path().join("config.json");
-
-        let payload = serde_json::json!({
-            "tool": "read_file",
-            "arguments": { "path": "hello.txt" }
-        });
-
-        let result = execute_tool_call(
-            "json",
-            &payload.to_string(),
-            false,
-            false,
-            ShellKind::Posix,
-            &mut cfg,
-            &cfg_path,
-        )
-        .await
-        .expect("json wrapper should succeed");
-        assert!(result, "json wrapper should dispatch an inner tool");
-    }
-
-    #[tokio::test]
-    async fn execute_tool_call_handles_nested_json_wrapper() {
-        let dir = tempdir().unwrap();
-        unsafe {
-            std::env::set_var("HOME", dir.path());
-        }
-        std::env::set_current_dir(dir.path()).unwrap();
-
-        let file_path = dir.path().join("data.txt");
-        std::fs::write(&file_path, "content").unwrap();
-
-        let mut cfg = Config::default();
-        let cfg_path = dir.path().join("config.json");
-
-        let inner = serde_json::json!({
-            "tool": "read_file",
-            "arguments": { "path": "data.txt" }
-        });
-        let payload = serde_json::json!({
-            "tool": "json",
-            "arguments": inner
-        });
-
-        let result = execute_tool_call(
-            "json",
-            &payload.to_string(),
-            false,
-            false,
-            ShellKind::Posix,
-            &mut cfg,
-            &cfg_path,
-        )
-        .await
-        .expect("nested json wrapper should succeed");
-        assert!(result, "nested json wrapper should dispatch an inner tool");
-    }
 
     #[test]
     fn sanitize_cwd_allows_relative_subdir() {
@@ -766,55 +596,5 @@ mod tests {
         let (result, fell_back) = sanitize_cwd_path(Some(nested.to_string_lossy().as_ref()), &base);
         assert_eq!(result, nested);
         assert!(!fell_back);
-    }
-
-    #[test]
-    fn format_execute_command_result_suppresses_streamed_output_without_debug() {
-        let result = ExecuteCommandResult {
-            summary: "Exit code: 0\n--- stdout ---\nok\n--- stderr ---\n".into(),
-            streamed_live: true,
-        };
-        assert!(format_execute_command_result(&result, false).is_none());
-        assert!(format_execute_command_result(&result, true).is_none());
-    }
-
-    #[test]
-    fn format_execute_command_result_returns_full_summary_when_not_streamed() {
-        let result = ExecuteCommandResult {
-            summary: "Exit code: 1\n--- stdout ---\n\n--- stderr ---\nerr\n".into(),
-            streamed_live: false,
-        };
-        let msg = format_execute_command_result(&result, false).expect("should emit");
-        assert!(msg.contains("Exit code: 1"));
-        assert!(msg.contains("--- stderr ---"));
-    }
-
-    #[test]
-    fn normalize_tool_arguments_unwraps_legacy_wrapper() {
-        let raw = r#"{"tool":"execute_command","arguments":{"command":"ls"}}"#;
-        let normalized = normalize_tool_arguments(raw).expect("normalize");
-        assert_eq!(normalized, "{\"command\":\"ls\"}");
-    }
-
-    #[test]
-    fn normalize_tool_arguments_leaves_openai_function_call_intact() {
-        // This is the standard payload we get from OpenAI-style function calls.
-        let raw = r#"{"command":"ls -al","cwd":"."}"#;
-        let normalized = normalize_tool_arguments(raw).expect("normalize");
-        assert_eq!(normalized, raw);
-    }
-
-    #[test]
-    fn normalize_tool_arguments_passthrough_for_standard_schema() {
-        let raw = r#"{\"command\":\"ls\",\"cwd\":\".\"}"#;
-        let normalized = normalize_tool_arguments(raw).expect("normalize");
-        assert_eq!(normalized, raw);
-    }
-
-    #[test]
-    fn normalize_tool_arguments_handles_non_json_gracefully() {
-        let raw = "not-json";
-        let normalized = normalize_tool_arguments(raw).expect("normalize");
-        assert_eq!(normalized, raw);
     }
 }

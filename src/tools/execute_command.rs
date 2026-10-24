@@ -34,13 +34,22 @@ pub struct StreamChunk<'a> {
     pub data: &'a [u8],
 }
 
+/// Result of a command that ran to completion.
+#[derive(Debug, Clone)]
+pub struct CommandOutput {
+    /// The command's exit code; 128 + N when it was killed by signal N.
+    pub exit_code: i32,
+    /// Exit code, stdout and stderr as text.
+    pub summary: String,
+}
+
 pub async fn run(
     args: Args,
     auto_yes: bool,
     debug: bool,
     shell: ShellKind,
     mut on_chunk: Option<&mut dyn for<'chunk> FnMut(StreamChunk<'chunk>)>,
-) -> Result<String> {
+) -> Result<CommandOutput> {
     let cwd = args.cwd.as_deref().unwrap_or(".");
     eprintln!("Proposed command: {}", args.command);
     eprintln!("Working directory: {}", cwd);
@@ -151,7 +160,10 @@ pub async fn run(
     if !stderr.ends_with('\n') {
         summary.push('\n');
     }
-    Ok(summary)
+    Ok(CommandOutput {
+        exit_code: code,
+        summary,
+    })
 }
 
 enum StreamMessage {
@@ -201,9 +213,9 @@ impl KillSwitch {
         match self.inner {
             KillSwitchInner::Plain(Some(mut child)) => {
                 let status = child.wait().await?;
-                Ok(status.code().unwrap_or(-1))
+                Ok(exit_code_of(status))
             }
-            KillSwitchInner::Plain(None) => Ok(-1),
+            KillSwitchInner::Plain(None) => Ok(1),
             #[cfg(unix)]
             KillSwitchInner::Pty(Some(mut child)) => {
                 let status = tokio::task::spawn_blocking(move || child.wait())
@@ -212,9 +224,21 @@ impl KillSwitch {
                 Ok(convert_pty_exit_status(status))
             }
             #[cfg(unix)]
-            KillSwitchInner::Pty(None) => Ok(-1),
+            KillSwitchInner::Pty(None) => Ok(1),
         }
     }
+}
+
+/// The shell convention: the exit code, or 128 + N for a process killed by signal N.
+fn exit_code_of(status: std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+    status.code().unwrap_or(1)
 }
 
 fn spawn_child(command: &str, cwd: &str, shell: ShellKind, debug: bool) -> Result<ChildProcess> {
