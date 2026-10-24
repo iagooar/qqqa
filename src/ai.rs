@@ -73,14 +73,23 @@ struct ChatResponse {
 #[derive(Debug, Deserialize)]
 struct ToolFunctionSpecResp {
     name: String,
-    // OpenAI-compatible APIs return arguments as a JSON string
-    arguments: String,
+    // OpenAI returns arguments as a JSON string; some local servers send an object.
+    #[serde(default)]
+    arguments: Value,
+}
+
+impl ToolFunctionSpecResp {
+    fn arguments_json(&self) -> String {
+        match &self.arguments {
+            Value::String(s) => s.clone(),
+            Value::Null => "{}".to_string(),
+            other => other.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct ToolCallResp {
-    #[serde(rename = "type")]
-    _type: String,
     function: ToolFunctionSpecResp,
 }
 
@@ -381,14 +390,14 @@ impl ChatClient {
         if let Some(calls) = choice.message.tool_calls {
             if let Some(first) = calls.into_iter().next() {
                 return Ok(AssistantReply::ToolCall {
+                    arguments_json: first.function.arguments_json(),
                     name: first.function.name,
-                    arguments_json: first.function.arguments,
                 });
             }
         } else if let Some(func) = choice.message.function_call {
             return Ok(AssistantReply::ToolCall {
+                arguments_json: func.arguments_json(),
                 name: func.name,
-                arguments_json: func.arguments,
             });
         }
         let content = choice.message.content.unwrap_or_default();

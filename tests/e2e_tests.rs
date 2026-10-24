@@ -545,3 +545,59 @@ fn qa_fails_on_an_unknown_tool() {
     assert_eq!(code, Some(1));
     assert!(stderr.contains("Unknown tool call"), "{stderr}");
 }
+
+fn qa_reads_note(reply: &str) -> (Option<i32>, String, String) {
+    let server = MockServer::start();
+    mock_reply(&server, "application/json", reply);
+    let home = tempdir().unwrap();
+    std::fs::write(home.path().join("note.txt"), "note-contents").unwrap();
+    let out = cargo_bin_cmd!("qa")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", "")
+        .env("OPENROUTER_API_KEY", "test")
+        .current_dir(home.path())
+        .args(["-n", "--api-base", &server.base_url(), "read note.txt"])
+        .write_stdin("")
+        .output()
+        .unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn qa_accepts_a_fenced_json_reply() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let content = "```json\n{\"tool\":\"read_file\",\"arguments\":{\"path\":\"note.txt\"}}\n```";
+    let reply =
+        serde_json::json!({"choices":[{"message":{"content":content},"finish_reason":"stop"}]});
+    let (code, stdout, stderr) = qa_reads_note(&reply.to_string());
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("note-contents"), "{stdout}");
+}
+
+#[test]
+fn qa_accepts_object_arguments_without_a_type() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let reply = r#"{"choices":[{"message":{"content":null,"tool_calls":[{"function":{"name":"read_file","arguments":{"path":"note.txt"}}}]},"finish_reason":"tool_calls"}]}"#;
+    let (code, stdout, stderr) = qa_reads_note(reply);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("note-contents"), "{stdout}");
+}
+
+#[test]
+fn qa_prints_an_explanation_sent_through_the_json_tool() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let reply = tool_call_reply("json", serde_json::json!({"reason":"I will not run that."}));
+    let (code, stdout, stderr) = qa_reads_note(&reply);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("I will not run that."), "{stdout}");
+}

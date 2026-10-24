@@ -10,7 +10,7 @@ use qqqa::perms;
 use qqqa::prompt::{build_qa_system_prompt, build_qa_user_message, coalesce_prompt_inputs};
 use qqqa::shell::{ShellKind, detect_shell, shell_hint_for_prompt};
 use qqqa::tools::execute_command::CommandOutput;
-use qqqa::tools::{ToolCall, parse_tool_call};
+use qqqa::tools::{Reply, ToolCall, parse_reply_text, resolve_tool_call};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -310,40 +310,31 @@ async fn main() -> Result<()> {
         _ => unreachable!("Provider/client mismatch"),
     };
 
-    let mut exit_code = 0;
-    match assistant_reply {
+    let reply = match assistant_reply {
         AssistantReply::ToolCall {
             name,
             arguments_json,
         } => {
-            exit_code = execute_tool_call(
-                name.as_str(),
-                &arguments_json,
-                cli.yes,
-                cli.debug,
-                shell_kind,
-                &mut cfg,
-                &path,
-            )
-            .await?
-            .ok_or_else(|| anyhow!("Unknown tool call: {}", name))?;
+            if cli.debug {
+                eprintln!("[debug] tool call '{}' args: {}", name, arguments_json);
+            }
+            resolve_tool_call(&name, serde_json::Value::String(arguments_json))?
         }
         AssistantReply::Content(assistant) => {
             if cli.debug {
                 eprintln!("[debug] assistant raw: {}", assistant);
             }
-            // Try to parse as a tool call per our plain-JSON protocol; else print the answer.
-            match parse_tool_call(assistant.trim()) {
-                Ok(call) => {
-                    exit_code =
-                        run_tool(call, cli.yes, cli.debug, shell_kind, &mut cfg, &path).await;
-                }
-                Err(_) => {
-                    qqqa::outln!("{}", assistant.trim_end());
-                }
-            }
+            // A bare or fenced `{ "tool": .., "arguments": .. }` is a tool call; else the answer.
+            parse_reply_text(&assistant)?
         }
-    }
+    };
+    let exit_code = match reply {
+        Reply::Tool(call) => run_tool(call, cli.yes, cli.debug, shell_kind, &mut cfg, &path).await,
+        Reply::Text(text) => {
+            qqqa::outln!("{}", text.trim_end());
+            0
+        }
+    };
 
     if exit_code != 0 {
         std::process::exit(exit_code);
@@ -539,70 +530,6 @@ fn sanitize_cwd_path(requested: Option<&str>, base_dir: &Path) -> (PathBuf, bool
     (base_dir.join(relative), false)
 }
 
-async fn execute_tool_call(
-    name: &str,
-    arguments_json: &str,
-    auto_yes: bool,
-    debug: bool,
-    shell: ShellKind,
-    cfg: &mut Config,
-    cfg_path: &Path,
-) -> Result<Option<i32>> {
-    if debug {
-        eprintln!("[debug] tool call '{}' args: {}", name, arguments_json);
-    }
-    let mut current_name = name.to_string();
-    let mut current_args = arguments_json.to_string();
-
-    loop {
-        match current_name.as_str() {
-            "read_file" => {
-                let normalized = normalize_tool_arguments(&current_args)?;
-                let args: qqqa::tools::read_file::Args = serde_json::from_str(&normalized)
-                    .map_err(|e| anyhow!("Failed to parse read_file args: {}", e))?;
-                let call = ToolCall::ReadFile(args);
-                return Ok(Some(
-                    run_tool(call, auto_yes, debug, shell, cfg, cfg_path).await,
-                ));
-            }
-            "write_file" => {
-                let normalized = normalize_tool_arguments(&current_args)?;
-                let args: qqqa::tools::write_file::Args = serde_json::from_str(&normalized)
-                    .map_err(|e| anyhow!("Failed to parse write_file args: {}", e))?;
-                let call = ToolCall::WriteFile(args);
-                return Ok(Some(
-                    run_tool(call, auto_yes, debug, shell, cfg, cfg_path).await,
-                ));
-            }
-            "execute_command" => {
-                let normalized = normalize_tool_arguments(&current_args)?;
-                let args: qqqa::tools::execute_command::Args = serde_json::from_str(&normalized)
-                    .map_err(|e| anyhow!("Failed to parse execute_command args: {}", e))?;
-                let call = ToolCall::ExecuteCommand(args);
-                return Ok(Some(
-                    run_tool(call, auto_yes, debug, shell, cfg, cfg_path).await,
-                ));
-            }
-            "json" => {
-                let inner: serde_json::Value = serde_json::from_str(&current_args)
-                    .map_err(|e| anyhow!("Failed to parse json wrapper: {}", e))?;
-                let tool_name = inner
-                    .get("tool")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow!("Wrapped json tool missing 'tool' field"))?;
-                let arguments = inner
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({}));
-                current_name = tool_name.to_string();
-                current_args = serde_json::to_string(&arguments)?;
-                continue;
-            }
-            _ => return Ok(None),
-        }
-    }
-}
-
 fn print_tool_result(tool: &str, result: &str) {
     qqqa::outln!("[tool:{}]", tool);
     qqqa::outln!("{}", result.trim_end());
@@ -614,112 +541,11 @@ fn print_tool_error(tool: &str, err: &str) -> i32 {
     1
 }
 
-fn normalize_tool_arguments(raw: &str) -> Result<String> {
-    // If the raw blob already matches our expected schema, leave it alone.
-    // Otherwise, detect legacy wrappers of the shape {"tool": ..., "arguments": {...}}
-    // and unwrap them so serde can deserialize into the tool arg structs.
-    #[derive(serde::Deserialize)]
-    struct LegacyWrapper {
-        tool: Option<String>,
-        arguments: serde_json::Value,
-    }
-
-    let trimmed = raw.trim_start();
-    if !trimmed.starts_with('{') {
-        return Ok(raw.to_string());
-    }
-
-    match serde_json::from_str::<LegacyWrapper>(trimmed) {
-        Ok(wrapper) if wrapper.tool.is_some() => Ok(wrapper.arguments.to_string()),
-        _ => Ok(raw.to_string()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
     use tempfile::tempdir;
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn execute_tool_call_handles_json_wrapper() {
-        let dir = tempdir().unwrap();
-        unsafe {
-            std::env::set_var("HOME", dir.path());
-        }
-        std::env::set_current_dir(dir.path()).unwrap();
-
-        let file_path = dir.path().join("hello.txt");
-        std::fs::write(&file_path, "hi there").unwrap();
-
-        let mut cfg = Config::default();
-        let cfg_path = dir.path().join("config.json");
-
-        let payload = serde_json::json!({
-            "tool": "read_file",
-            "arguments": { "path": "hello.txt" }
-        });
-
-        let result = execute_tool_call(
-            "json",
-            &payload.to_string(),
-            false,
-            false,
-            ShellKind::Posix,
-            &mut cfg,
-            &cfg_path,
-        )
-        .await
-        .expect("json wrapper should succeed");
-        assert_eq!(
-            result,
-            Some(0),
-            "json wrapper should dispatch an inner tool"
-        );
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn execute_tool_call_handles_nested_json_wrapper() {
-        let dir = tempdir().unwrap();
-        unsafe {
-            std::env::set_var("HOME", dir.path());
-        }
-        std::env::set_current_dir(dir.path()).unwrap();
-
-        let file_path = dir.path().join("data.txt");
-        std::fs::write(&file_path, "content").unwrap();
-
-        let mut cfg = Config::default();
-        let cfg_path = dir.path().join("config.json");
-
-        let inner = serde_json::json!({
-            "tool": "read_file",
-            "arguments": { "path": "data.txt" }
-        });
-        let payload = serde_json::json!({
-            "tool": "json",
-            "arguments": inner
-        });
-
-        let result = execute_tool_call(
-            "json",
-            &payload.to_string(),
-            false,
-            false,
-            ShellKind::Posix,
-            &mut cfg,
-            &cfg_path,
-        )
-        .await
-        .expect("nested json wrapper should succeed");
-        assert_eq!(
-            result,
-            Some(0),
-            "nested json wrapper should dispatch an inner tool"
-        );
-    }
 
     #[test]
     fn sanitize_cwd_allows_relative_subdir() {
@@ -770,34 +596,5 @@ mod tests {
         let (result, fell_back) = sanitize_cwd_path(Some(nested.to_string_lossy().as_ref()), &base);
         assert_eq!(result, nested);
         assert!(!fell_back);
-    }
-
-    #[test]
-    fn normalize_tool_arguments_unwraps_legacy_wrapper() {
-        let raw = r#"{"tool":"execute_command","arguments":{"command":"ls"}}"#;
-        let normalized = normalize_tool_arguments(raw).expect("normalize");
-        assert_eq!(normalized, "{\"command\":\"ls\"}");
-    }
-
-    #[test]
-    fn normalize_tool_arguments_leaves_openai_function_call_intact() {
-        // This is the standard payload we get from OpenAI-style function calls.
-        let raw = r#"{"command":"ls -al","cwd":"."}"#;
-        let normalized = normalize_tool_arguments(raw).expect("normalize");
-        assert_eq!(normalized, raw);
-    }
-
-    #[test]
-    fn normalize_tool_arguments_passthrough_for_standard_schema() {
-        let raw = r#"{\"command\":\"ls\",\"cwd\":\".\"}"#;
-        let normalized = normalize_tool_arguments(raw).expect("normalize");
-        assert_eq!(normalized, raw);
-    }
-
-    #[test]
-    fn normalize_tool_arguments_handles_non_json_gracefully() {
-        let raw = "not-json";
-        let normalized = normalize_tool_arguments(raw).expect("normalize");
-        assert_eq!(normalized, raw);
     }
 }

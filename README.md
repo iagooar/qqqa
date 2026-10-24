@@ -314,7 +314,7 @@ The agent will propose a safe command like `yt-dlp -x --audio-format mp3 URL`, s
 
 ### qa - do a single step with tools
 
-`qa` can either answer in plain text or request one tool call in JSON. Supported tools:
+`qa` can either answer in plain text or request one tool call in JSON (a bare object, or one inside a Markdown code fence; `arguments` may be an object or a JSON string). Supported tools:
 
 - `read_file` with `{ "path": string }`
 - `write_file` with `{ "path": string, "content": string }`

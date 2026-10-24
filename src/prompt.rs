@@ -196,7 +196,7 @@ pub fn build_qa_system_prompt() -> String {
     let mut s = String::new();
     s.push_str("Balance quick answer with just enough thinking.\n");
     s.push_str("You are a careful CLI agent with a single tool-call step.\n");
-    s.push_str("You must satisfy every user request by issuing exactly one tool call, returned as a JSON object with this shape:\n");
+    s.push_str("When the request needs a file or a command, issue exactly one tool call, returned as a JSON object with this shape:\n");
     s.push_str("{ \"tool\": string, \"arguments\": object }\n\n");
     s.push_str("Available tools and JSON argument schemas:\n");
     s.push_str("- read_file: { \"path\": string }\n");
@@ -204,7 +204,7 @@ pub fn build_qa_system_prompt() -> String {
     s.push_str("- execute_command: { \"command\": string, \"cwd?\": string }\n\n");
     s.push_str("Rules:\n");
     s.push_str("- Single step: at most one tool call.\n");
-    s.push_str("- When the user asks you to run or inspect something, you must call the appropriate tool (usually execute_command) to gather real output; if running a command would be unsafe or impossible, call the `json` tool and explain why instead of replying as plain text.\n");
+    s.push_str("- When the user asks you to run or inspect something, you must call the appropriate tool (usually execute_command) to gather real output; if running a command would be unsafe or impossible, reply in plain text and explain why.\n");
     s.push_str("- If using a tool, return ONLY the JSON object (no prose) and fill the function parameters exactly as declared (no extra wrapper objects).\n");
     s.push_str("- Prefer safe, non-destructive commands.\n");
     s
