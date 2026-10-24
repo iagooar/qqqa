@@ -180,9 +180,6 @@ async fn main() -> Result<()> {
         eprintln!("[debug] Inferred shell: {}", shell_kind.display_name(),);
     }
 
-    if eff.system_prompt.is_some() && cli.debug {
-        eprintln!("[debug] system_prompt applies to qq only; qa keeps its tool prompt.");
-    }
     let mut system_prompt = build_qa_system_prompt();
     if cfg.no_emoji_enabled() {
         system_prompt.push_str("\nHard rule: You MUST NOT use emojis anywhere in the response.\n");

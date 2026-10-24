@@ -578,8 +578,6 @@ pub struct EffectiveProfile {
     pub reasoning_effort: Option<String>,
     pub temperature: Option<f32>,
     pub prompt_suffix: Option<String>,
-    /// Replacement for qq's built-in system prompt, if configured.
-    pub system_prompt: Option<String>,
     pub max_tokens: Option<u32>,
     pub reasoning_max_tokens: Option<u32>,
 }
@@ -633,9 +631,11 @@ fn json_overrides(current: &Value, defaults: &Value) -> Option<Value> {
             let defaults = defaults.as_object().unwrap_or(&empty);
             let out: serde_json::Map<String, Value> = map
                 .iter()
-                .filter_map(|(key, value)| {
-                    let default = defaults.get(key).unwrap_or(&Value::Null);
-                    json_overrides(value, default).map(|v| (key.clone(), v))
+                .filter_map(|(key, value)| match defaults.get(key) {
+                    Some(default) => json_overrides(value, default).map(|v| (key.clone(), v)),
+                    // No default to compare with: keep the user's value exactly,
+                    // including empty objects and nulls (e.g. inside extra_body).
+                    None => Some((key.clone(), value.clone())),
                 })
                 .collect();
             (!out.is_empty()).then_some(Value::Object(out))
@@ -902,21 +902,6 @@ impl Config {
             }
         };
 
-        let system_prompt = match resolve_system_prompt(
-            profile.system_prompt.as_deref(),
-            profile.system_prompt_file.as_deref(),
-            config_dir,
-            &format!("profile '{}'", profile_name),
-        )? {
-            Some(prompt) => Some(prompt),
-            None => resolve_system_prompt(
-                self.system_prompt.as_deref(),
-                self.system_prompt_file.as_deref(),
-                config_dir,
-                "the config",
-            )?,
-        };
-
         Ok(EffectiveProfile {
             provider_key: provider_key.clone(),
             model,
@@ -928,10 +913,36 @@ impl Config {
                 .clone()
                 .or_else(|| self.prompt_suffix.clone())
                 .filter(|suffix| !suffix.trim().is_empty()),
-            system_prompt,
             max_tokens: profile.max_tokens,
             reasoning_max_tokens: profile.reasoning_max_tokens,
         })
+    }
+
+    /// The configured replacement for qq's system prompt, if any: the
+    /// profile's `system_prompt`/`system_prompt_file`, else the config root's.
+    /// Only qq calls this, so a qq prompt file can never stop qa from starting.
+    pub fn qq_system_prompt(
+        &self,
+        profile_opt: Option<&str>,
+        config_dir: Option<&Path>,
+    ) -> Result<Option<String>> {
+        let profile_name = profile_opt.unwrap_or(&self.default_profile);
+        if let Some(profile) = self.profiles.get(profile_name)
+            && let Some(prompt) = resolve_system_prompt(
+                profile.system_prompt.as_deref(),
+                profile.system_prompt_file.as_deref(),
+                config_dir,
+                &format!("profile '{}'", profile_name),
+            )?
+        {
+            return Ok(Some(prompt));
+        }
+        resolve_system_prompt(
+            self.system_prompt.as_deref(),
+            self.system_prompt_file.as_deref(),
+            config_dir,
+            "the config",
+        )
     }
 
     /// Interactive initializer that writes a fresh config and allows choosing
