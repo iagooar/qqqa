@@ -10,7 +10,7 @@ use qqqa::perms;
 use qqqa::prompt::{build_qa_system_prompt, build_qa_user_message, coalesce_prompt_inputs};
 use qqqa::shell::{ShellKind, detect_shell, shell_hint_for_prompt};
 use qqqa::tools::{ToolCall, parse_tool_call};
-use std::io::{IsTerminal, Read, Stdin, Write};
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -40,6 +40,10 @@ struct Cli {
     /// Disable terminal history context
     #[arg(short = 'n', long = "no-history", action = ArgAction::SetTrue)]
     no_history: bool,
+
+    /// Ignore stdin even when it is a pipe or a file (for loops and wrappers)
+    #[arg(long = "no-stdin", action = ArgAction::SetTrue)]
+    no_stdin: bool,
     /// Include terminal history context even if disabled in config
     #[arg(long = "history", action = ArgAction::SetTrue, conflicts_with = "no_history")]
     history: bool,
@@ -86,11 +90,10 @@ async fn main() -> Result<()> {
     }
 
     // Handle stdin piping for extra context.
-    let stdin_is_tty = std::io::stdin().is_terminal();
-    let stdin_block = if !stdin_is_tty {
-        Some(read_all_stdin(std::io::stdin())?)
-    } else {
+    let stdin_block = if cli.no_stdin {
         None
+    } else {
+        qqqa::input::read_piped_stdin()?
     };
 
     let prepared = coalesce_prompt_inputs(cli.task.join(" "), stdin_block);
@@ -633,12 +636,6 @@ fn format_execute_command_result(result: &ExecuteCommandResult, debug: bool) -> 
     } else {
         Some(result.summary.trim_end().to_string())
     }
-}
-
-fn read_all_stdin(mut stdin: Stdin) -> Result<String> {
-    let mut buf = String::new();
-    stdin.read_to_string(&mut buf)?;
-    Ok(buf)
 }
 
 #[cfg(test)]

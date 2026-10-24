@@ -15,7 +15,6 @@ use qqqa::prompt::{build_qq_system_prompt, build_qq_user_message, coalesce_promp
 use qqqa::shell::{detect_shell, shell_hint_for_prompt};
 use std::ffi::OsString;
 use std::io::{IsTerminal as _, Write as _};
-use std::io::{Read, Stdin};
 use std::time::Duration;
 
 /// qq — ask an LLM assistant a question
@@ -55,6 +54,10 @@ struct Cli {
     /// Disable terminal history context
     #[arg(short = 'n', long = "no-history", action = ArgAction::SetTrue)]
     no_history: bool,
+
+    /// Ignore stdin even when it is a pipe or a file (for loops and wrappers)
+    #[arg(long = "no-stdin", action = ArgAction::SetTrue)]
+    no_stdin: bool,
     /// Include terminal history context even if disabled in config
     #[arg(long = "history", action = ArgAction::SetTrue, conflicts_with = "no_history")]
     history: bool,
@@ -132,11 +135,10 @@ async fn main() -> Result<()> {
     }
 
     // Detect piped stdin and read it if present.
-    let stdin_is_tty = std::io::stdin().is_terminal();
-    let stdin_block = if !stdin_is_tty {
-        Some(read_all_stdin(std::io::stdin())?)
-    } else {
+    let stdin_block = if cli.no_stdin {
         None
+    } else {
+        qqqa::input::read_piped_stdin()?
     };
 
     let prepared = coalesce_prompt_inputs(cli.question.join(" "), stdin_block);
@@ -425,14 +427,6 @@ fn check_answer(
         ));
     }
     Ok(())
-}
-
-/// Read the entire stdin into a string. We do this synchronously before async work
-/// begins to keep things simple and robust.
-fn read_all_stdin(mut stdin: Stdin) -> Result<String> {
-    let mut buf = String::new();
-    stdin.read_to_string(&mut buf)?;
-    Ok(buf)
 }
 
 fn normalized_cli_args() -> Vec<OsString> {
