@@ -2,6 +2,8 @@
 name = "qqqa"
 version = "1.0.1"
 edition = "2024"
+# File::lock (config lock) is stable since 1.89.
+rust-version = "1.89"
 license = "MIT"
 description = "qqqa CLI (qq and qa) - fast, stateless LLM in the terminal"
 

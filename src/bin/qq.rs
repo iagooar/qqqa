@@ -548,41 +548,31 @@ fn print_copy_notice(raw_output: bool) {
 }
 
 fn persist_config_flags(cli: &Cli) -> Result<()> {
-    let (mut cfg, path) = Config::load_or_init(cli.debug)?;
-    let mut changed = false;
+    let (_, path) = Config::load_or_init(cli.debug)?;
+    Config::update(&path, cli.debug, |cfg| {
+        if cli.no_fun {
+            cfg.no_emoji = Some("true".to_string());
+        }
+        if cli.enable_auto_copy {
+            cfg.set_copy_first_command(true);
+        }
+        if cli.disable_auto_copy {
+            cfg.set_copy_first_command(false);
+        }
+    })?;
 
-    if cli.no_fun {
-        let desired = Some("true".to_string());
-        if cfg.no_emoji != desired {
-            cfg.no_emoji = desired;
-            changed = true;
-        }
-        if cli.debug {
-            eprintln!(
-                "[debug] Disabled emojis in system prompt (persisted at {}).",
-                path.display()
-            );
-        }
+    if cli.no_fun && cli.debug {
+        eprintln!(
+            "[debug] Disabled emojis in system prompt (persisted at {}).",
+            path.display()
+        );
     }
 
     if cli.enable_auto_copy {
-        if !cfg.copy_first_command_enabled() {
-            cfg.set_copy_first_command(true);
-            changed = true;
-        }
         qqqa::outln!("Auto-copy first command: enabled (persisted).");
     }
-
     if cli.disable_auto_copy {
-        if cfg.copy_first_command_enabled() {
-            cfg.set_copy_first_command(false);
-            changed = true;
-        }
         qqqa::outln!("Auto-copy first command: disabled (persisted).");
-    }
-
-    if changed {
-        cfg.save(&path, cli.debug)?;
     }
 
     Ok(())

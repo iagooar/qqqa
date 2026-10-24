@@ -55,6 +55,9 @@ pub struct CliProviderConfig {
     /// Optional hard override for the CLI model flag (useful if the vendor retires a default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<String>,
+    /// Keys this release does not know; kept so a save never drops them.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +81,9 @@ pub struct ModelProvider {
     /// Optional CLI-specific parameters (required when mode = cli).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli: Option<CliProviderConfig>,
+    /// Keys this release does not know; kept so a save never drops them.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -88,6 +94,9 @@ pub struct ProviderTlsConfig {
     /// Optional env var name whose value points to the bundle path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_bundle_env: Option<String>,
+    /// Keys this release does not know; kept so a save never drops them.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +125,9 @@ pub struct Profile {
     /// against it. Falls back to `max_tokens`, then to 16384.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_max_tokens: Option<u32>,
+    /// Keys this release does not know; kept so a save never drops them.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +150,9 @@ pub struct Config {
     /// Optional text appended to the built-in system prompt for every profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_suffix: Option<String>,
+    /// Keys this release does not know; kept so a save never drops them.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 /// Resolve the qqqa config directory for a given home path.
@@ -171,6 +186,7 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                extra: Default::default(),
                 cli: None,
             },
         );
@@ -184,6 +200,7 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                extra: Default::default(),
                 cli: None,
             },
         );
@@ -197,6 +214,7 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                extra: Default::default(),
                 cli: None,
             },
         );
@@ -210,6 +228,7 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                extra: Default::default(),
                 cli: None,
             },
         );
@@ -223,6 +242,7 @@ impl Default for Config {
                 local: true,
                 tls: None,
                 mode: ProviderMode::Http,
+                extra: Default::default(),
                 cli: None,
             },
         );
@@ -236,11 +256,13 @@ impl Default for Config {
                 local: true,
                 tls: None,
                 mode: ProviderMode::Cli,
+                extra: Default::default(),
                 cli: Some(CliProviderConfig {
                     engine: CliEngine::Codex,
                     binary: "codex".to_string(),
                     base_args: vec!["exec".to_string()],
                     model_override: None,
+                    extra: Default::default(),
                 }),
             },
         );
@@ -254,11 +276,13 @@ impl Default for Config {
                 local: true,
                 tls: None,
                 mode: ProviderMode::Cli,
+                extra: Default::default(),
                 cli: Some(CliProviderConfig {
                     engine: CliEngine::Claude,
                     binary: "claude".to_string(),
                     base_args: Vec::new(),
                     model_override: None,
+                    extra: Default::default(),
                 }),
             },
         );
@@ -272,6 +296,7 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                extra: Default::default(),
                 cli: None,
             },
         );
@@ -285,11 +310,13 @@ impl Default for Config {
                 local: true,
                 tls: None,
                 mode: ProviderMode::Cli,
+                extra: Default::default(),
                 cli: Some(CliProviderConfig {
                     engine: CliEngine::Gemini,
                     binary: "gemini".to_string(),
                     base_args: Vec::new(),
                     model_override: None,
+                    extra: Default::default(),
                 }),
             },
         );
@@ -306,6 +333,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -319,6 +347,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -332,6 +361,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -345,6 +375,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -358,6 +389,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -371,6 +403,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -384,6 +417,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -397,6 +431,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -410,6 +445,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra: Default::default(),
             },
         );
 
@@ -422,6 +458,7 @@ impl Default for Config {
             no_emoji: None,
             command_allowlist: None,
             prompt_suffix: None,
+            extra: Default::default(),
         }
     }
 }
@@ -587,9 +624,25 @@ impl Config {
     pub fn save(&self, path: &Path, debug: bool) -> Result<()> {
         let json = serde_json::to_vec_pretty(&self.to_overrides()?)
             .with_context(|| "Serializing config JSON")?;
-        fs::write(path, json).with_context(|| format!("Writing config: {}", path.display()))?;
+        write_atomic(path, &json).with_context(|| format!("Writing config: {}", path.display()))?;
         set_permissions_file(path, debug).ok();
         Ok(())
+    }
+
+    /// Change the config file at `path` safely when other qq/qa runs may save
+    /// at the same time: take a lock, re-read the file, apply `change`, save,
+    /// and return the result. Without the lock, two runs that both load and
+    /// then save lose one of the two changes.
+    pub fn update(path: &Path, debug: bool, change: impl FnOnce(&mut Config)) -> Result<Config> {
+        let _lock = lock_config(path)?;
+        let mut cfg = if path.exists() {
+            Config::load_from(path)?
+        } else {
+            Config::default()
+        };
+        change(&mut cfg);
+        cfg.save(path, debug)?;
+        Ok(cfg)
     }
 
     /// Whether the no-emoji flag is effectively enabled.
@@ -1056,6 +1109,68 @@ fn set_permissions_dir(path: &Path, _debug: bool) -> Result<()> {
     Ok(())
 }
 
+/// Write `bytes` to `path` so a reader sees the old file or the new one, never
+/// a partial one: write a temp file (mode 0600) next to it, fsync, rename.
+/// A symlinked config file is replaced at its target.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+
+    let target = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => fs::canonicalize(path)?,
+        _ => path.to_path_buf(),
+    };
+    let dir = target
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| CONFIG_FILE_NAME.to_string());
+    let tmp = dir.join(format!(".{}.{}.tmp", name, std::process::id()));
+    let result = (|| -> Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, &target)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Exclusive advisory lock for read-modify-write of the config file, held
+/// until the returned file is dropped. It locks a separate `.lock` file,
+/// because the rename in [`write_atomic`] replaces the config file itself.
+fn lock_config(path: &Path) -> Result<std::fs::File> {
+    let lock_path = path.with_extension("json.lock");
+    if let Some(dir) = lock_path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        fs::create_dir_all(dir)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("Opening config lock: {}", lock_path.display()))?;
+    file.lock()
+        .with_context(|| format!("Locking config: {}", lock_path.display()))?;
+    Ok(file)
+}
+
 fn set_permissions_file(path: &Path, _debug: bool) -> Result<()> {
     #[cfg(unix)]
     {
@@ -1078,6 +1193,7 @@ mod tests {
         let tls = ProviderTlsConfig {
             ca_bundle_path: Some(PathBuf::from("certs/litellm-ca.pem")),
             ca_bundle_env: None,
+            extra: Default::default(),
         };
         let resolved = tls
             .resolve(Some(dir.path()))
@@ -1100,6 +1216,7 @@ mod tests {
         let tls = ProviderTlsConfig {
             ca_bundle_path: Some(PathBuf::from("ignored.pem")),
             ca_bundle_env: Some(key.to_string()),
+            extra: Default::default(),
         };
         let resolved = tls
             .resolve(None)

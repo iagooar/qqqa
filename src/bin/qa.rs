@@ -109,8 +109,7 @@ async fn main() -> Result<()> {
     let (mut cfg, path) = Config::load_or_init(cli.debug)?;
     perms::set_custom_allowlist(cfg.command_allowlist());
     if cli.no_fun {
-        cfg.no_emoji = Some("true".to_string());
-        cfg.save(&path, cli.debug)?;
+        cfg = Config::update(&path, cli.debug, |c| c.no_emoji = Some("true".to_string()))?;
         if cli.debug {
             eprintln!(
                 "[debug] Disabled emojis in system prompt (persisted at {}).",
@@ -425,10 +424,10 @@ async fn run_execute_command_with_allowlist(
                         return Err(err);
                     }
                     if prompt_add_command_to_allowlist(&program)? {
-                        let inserted = cfg.add_command_to_allowlist(&program);
-                        if inserted {
-                            cfg.save(cfg_path, debug)?;
-                        }
+                        let mut inserted = false;
+                        *cfg = Config::update(cfg_path, debug, |c| {
+                            inserted = c.add_command_to_allowlist(&program);
+                        })?;
                         perms::set_custom_allowlist(cfg.command_allowlist());
                         if inserted {
                             if debug {

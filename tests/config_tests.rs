@@ -572,3 +572,102 @@ fn saving_a_full_old_config_keeps_only_overrides() {
         serde_json::json!({"default_profile": "openrouter", "include_history": true})
     );
 }
+
+#[test]
+fn unknown_keys_survive_a_save_at_every_level() {
+    let dir = tempdir().unwrap();
+    let path = write_json(
+        dir.path(),
+        &serde_json::json!({
+            "default_profile": "openrouter",
+            "future_option": {"a": 1},
+            "profiles": {"openai": {"model": "gpt-x", "future_profile_key": true}},
+            "model_providers": {
+                "openrouter": {"future_provider_key": "keep"},
+                "codex": {"cli": {"future_cli_key": 3}}
+            }
+        }),
+    );
+    let mut cfg = Config::load_from(&path).unwrap();
+    cfg.set_copy_first_command(true);
+    cfg.save(&path, false).unwrap();
+    let saved = read_json(&path);
+    assert_eq!(saved["future_option"], serde_json::json!({"a": 1}));
+    assert_eq!(saved["profiles"]["openai"]["future_profile_key"], true);
+    assert_eq!(
+        saved["model_providers"]["openrouter"]["future_provider_key"],
+        "keep"
+    );
+    assert_eq!(
+        saved["model_providers"]["codex"]["cli"]["future_cli_key"],
+        3
+    );
+    assert_eq!(saved["copy_first_command"], true);
+}
+
+#[test]
+fn save_leaves_no_temp_file_and_a_private_file() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    Config::default().save(&path, false).unwrap();
+    Config::default().save(&path, false).unwrap();
+    let names: Vec<String> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["config.json".to_string()]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn save_through_a_symlink_keeps_the_link() {
+    let dir = tempdir().unwrap();
+    let real = dir.path().join("real.json");
+    Config::default().save(&real, false).unwrap();
+    let link = dir.path().join("config.json");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let mut cfg = Config::load_from(&link).unwrap();
+    cfg.set_copy_first_command(true);
+    cfg.save(&link, false).unwrap();
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(read_json(&real)["copy_first_command"], true);
+}
+
+#[test]
+fn concurrent_updates_keep_every_change() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    Config::default().save(&path, false).unwrap();
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                Config::update(&path, false, |cfg| {
+                    cfg.add_command_to_allowlist(&format!("tool{i}"));
+                    // Widen the window between the read and the write.
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                })
+                .unwrap();
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let cfg = Config::load_from(&path).unwrap();
+    let mut list = cfg.command_allowlist();
+    list.sort();
+    let want: Vec<String> = (0..8).map(|i| format!("tool{i}")).collect();
+    assert_eq!(list, want);
+}
