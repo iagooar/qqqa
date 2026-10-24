@@ -18,6 +18,8 @@ pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 /// Default output cap for reasoning models, whose reasoning tokens count against it.
 pub const DEFAULT_REASONING_MAX_TOKENS: u32 = 16384;
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 180;
+/// Request body keys that `extra_body` cannot replace.
+const PROTECTED_BODY_KEYS: &[&str] = &["model", "messages", "stream", "tools"];
 const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_TEMPERATURE: f32 = 0.15;
 
@@ -140,6 +142,7 @@ pub struct ChatClient {
     temperature_user_override: bool,
     max_tokens: Option<u32>,
     reasoning_max_tokens: Option<u32>,
+    extra_body: serde_json::Map<String, Value>,
     default_headers: HeaderMap,
 }
 
@@ -179,6 +182,7 @@ impl ChatClient {
             temperature_user_override: false,
             max_tokens: None,
             reasoning_max_tokens: None,
+            extra_body: serde_json::Map::new(),
             default_headers,
         })
     }
@@ -202,6 +206,13 @@ impl ChatClient {
     ) -> Self {
         self.max_tokens = max_tokens;
         self.reasoning_max_tokens = reasoning_max_tokens;
+        self
+    }
+
+    /// Extra JSON fields merged into every request body. `model`, `messages`,
+    /// `stream` and `tools` are set by qqqa and are not overridden.
+    pub fn with_extra_body(mut self, extra_body: serde_json::Map<String, Value>) -> Self {
+        self.extra_body = extra_body;
         self
     }
 
@@ -297,6 +308,15 @@ impl ChatClient {
                 obj.insert("reasoning_effort".into(), json!(effort));
             } else {
                 obj.remove("reasoning_effort");
+            }
+            for (key, value) in &self.extra_body {
+                if PROTECTED_BODY_KEYS.contains(&key.as_str()) {
+                    if debug {
+                        eprintln!("[debug] Ignoring extra_body key '{}': set by qqqa", key);
+                    }
+                    continue;
+                }
+                obj.insert(key.clone(), value.clone());
             }
         }
     }

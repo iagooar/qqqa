@@ -368,6 +368,26 @@ The runner enforces a default allowlist (think `ls`, `grep`, `find`, `rg`, `awk`
 
 ## Advanced features and configurations
 
+### Custom headers and request fields (provider routing)
+
+Any HTTP provider accepts `headers` (sent with every request) and `extra_body` (JSON fields merged into every request body). A profile can add its own `extra_body`, which wins over the provider's. qqqa always sets `model`, `messages`, `stream` and `tools` itself; `extra_body` cannot replace them.
+
+For example, to send `openai/gpt-oss-120b` through Groq on OpenRouter ([provider routing](https://openrouter.ai/docs/features/provider-routing)):
+
+```json
+{
+  "profiles": {
+    "oss": {
+      "model_provider": "openrouter",
+      "model": "openai/gpt-oss-120b",
+      "extra_body": { "provider": { "order": ["groq"], "allow_fallbacks": false } }
+    }
+  }
+}
+```
+
+The OpenRouter provider's default headers (`HTTP-Referer`, `X-Title`) are ordinary `headers` entries; set your own values to replace them.
+
 ### Custom TLS certificates (self-signed proxies)
 
 Some OpenAI-compatible gateways (LiteLLM, local corporate proxies, etc.) terminate TLS with a self-signed CA. Add a per-provider `tls` block so qqqa trusts that CA in addition to the default Rustls bundle:

@@ -208,7 +208,8 @@ async fn main() -> Result<()> {
             )?
             .with_reasoning_effort(eff.reasoning_effort.clone())
             .with_temperature(eff.temperature, eff.temperature.is_some())
-            .with_max_tokens(eff.max_tokens, eff.reasoning_max_tokens),
+            .with_max_tokens(eff.max_tokens, eff.reasoning_max_tokens)
+            .with_extra_body(conn.extra_body.clone()),
         ),
         ProviderConnection::Cli(_) => None,
     };

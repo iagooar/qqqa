@@ -81,6 +81,13 @@ pub struct ModelProvider {
     /// Optional CLI-specific parameters (required when mode = cli).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli: Option<CliProviderConfig>,
+    /// HTTP headers sent with every request to this provider.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub headers: HashMap<String, String>,
+    /// Extra JSON fields merged into every request body to this provider
+    /// (for example OpenRouter's `provider` routing object).
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra_body: serde_json::Map<String, Value>,
     /// Keys this release does not know; kept so a save never drops them.
     #[serde(flatten, default)]
     pub extra: serde_json::Map<String, Value>,
@@ -125,6 +132,10 @@ pub struct Profile {
     /// against it. Falls back to `max_tokens`, then to 16384.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_max_tokens: Option<u32>,
+    /// Extra JSON fields merged into the request body for this profile; they
+    /// win over the provider's `extra_body`.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra_body: serde_json::Map<String, Value>,
     /// Keys this release does not know; kept so a save never drops them.
     #[serde(flatten, default)]
     pub extra: serde_json::Map<String, Value>,
@@ -186,6 +197,8 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
                 extra: Default::default(),
                 cli: None,
             },
@@ -200,6 +213,14 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                headers: HashMap::from([
+                    (
+                        "HTTP-Referer".to_string(),
+                        "https://github.com/iagooar/qqqa".to_string(),
+                    ),
+                    ("X-Title".to_string(), "qqqa".to_string()),
+                ]),
+                extra_body: Default::default(),
                 extra: Default::default(),
                 cli: None,
             },
@@ -214,6 +235,8 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
                 extra: Default::default(),
                 cli: None,
             },
@@ -228,6 +251,8 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
                 extra: Default::default(),
                 cli: None,
             },
@@ -242,6 +267,8 @@ impl Default for Config {
                 local: true,
                 tls: None,
                 mode: ProviderMode::Http,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
                 extra: Default::default(),
                 cli: None,
             },
@@ -256,6 +283,8 @@ impl Default for Config {
                 local: true,
                 tls: None,
                 mode: ProviderMode::Cli,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
                 extra: Default::default(),
                 cli: Some(CliProviderConfig {
                     engine: CliEngine::Codex,
@@ -276,6 +305,8 @@ impl Default for Config {
                 local: true,
                 tls: None,
                 mode: ProviderMode::Cli,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
                 extra: Default::default(),
                 cli: Some(CliProviderConfig {
                     engine: CliEngine::Claude,
@@ -296,6 +327,8 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
                 extra: Default::default(),
                 cli: None,
             },
@@ -310,6 +343,8 @@ impl Default for Config {
                 local: true,
                 tls: None,
                 mode: ProviderMode::Cli,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
                 extra: Default::default(),
                 cli: Some(CliProviderConfig {
                     engine: CliEngine::Gemini,
@@ -333,6 +368,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
                 extra: Default::default(),
             },
         );
@@ -347,6 +383,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
                 extra: Default::default(),
             },
         );
@@ -361,6 +398,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
                 extra: Default::default(),
             },
         );
@@ -375,6 +413,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
                 extra: Default::default(),
             },
         );
@@ -389,6 +428,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
                 extra: Default::default(),
             },
         );
@@ -403,6 +443,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
                 extra: Default::default(),
             },
         );
@@ -417,6 +458,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
                 extra: Default::default(),
             },
         );
@@ -431,6 +473,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
                 extra: Default::default(),
             },
         );
@@ -445,6 +488,7 @@ impl Default for Config {
                 prompt_suffix: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
                 extra: Default::default(),
             },
         );
@@ -470,6 +514,8 @@ pub struct HttpConnection {
     pub request_timeout_secs: Option<u64>,
     pub is_local: bool,
     pub headers: HashMap<String, String>,
+    /// Provider `extra_body` with the profile's on top.
+    pub extra_body: serde_json::Map<String, Value>,
     pub tls: Option<ResolvedTlsConfig>,
 }
 
@@ -769,7 +815,9 @@ impl Config {
                         provider_key
                     ));
                 }
-                let headers = provider_default_headers(provider_key);
+                let headers = provider.headers.clone();
+                let mut extra_body = provider.extra_body.clone();
+                extra_body.extend(profile.extra_body.clone());
                 // Prefer inline api_key; else env var per env_key. Local providers fall back to a
                 // placeholder key so callers can continue to send an Authorization header.
                 let api_key = if let Some(k) = provider.api_key.clone() {
@@ -798,6 +846,7 @@ impl Config {
                     request_timeout_secs,
                     is_local: provider.local,
                     headers,
+                    extra_body,
                     tls,
                 })
             }
@@ -1080,21 +1129,6 @@ impl ProviderTlsConfig {
         Ok(Some(ResolvedTlsConfig {
             ca_bundle_path: resolved,
         }))
-    }
-}
-
-fn provider_default_headers(provider_key: &str) -> HashMap<String, String> {
-    match provider_key {
-        "openrouter" => {
-            let mut headers = HashMap::new();
-            headers.insert(
-                "HTTP-Referer".to_string(),
-                "https://github.com/iagooar/qqqa".to_string(),
-            );
-            headers.insert("X-Title".to_string(), "qqqa".to_string());
-            headers
-        }
-        _ => HashMap::new(),
     }
 }
 

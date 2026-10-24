@@ -671,3 +671,24 @@ fn concurrent_updates_keep_every_change() {
     let want: Vec<String> = (0..8).map(|i| format!("tool{i}")).collect();
     assert_eq!(list, want);
 }
+
+#[test]
+fn provider_headers_layer_over_the_defaults() {
+    let dir = tempdir().unwrap();
+    let path = write_json(
+        dir.path(),
+        &serde_json::json!({"model_providers": {"openrouter": {
+            "api_key": "k",
+            "headers": {"X-Title": "mine", "X-Extra": "1"}
+        }}}),
+    );
+    let cfg = Config::load_from(&path).unwrap();
+    let eff = cfg.resolve_profile(Some("openrouter"), None, None).unwrap();
+    let http = eff.http().unwrap();
+    assert_eq!(http.headers["X-Title"], "mine");
+    assert_eq!(http.headers["X-Extra"], "1");
+    assert_eq!(
+        http.headers["HTTP-Referer"],
+        "https://github.com/iagooar/qqqa"
+    );
+}
