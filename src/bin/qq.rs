@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
             }
             Err(e) => match e.downcast::<InitExistsError>() {
                 Ok(init_err) => {
-                    println!(
+                    qqqa::outln!(
                         "Keeping your existing config at {}.\nMove or remove that file if you want to rerun --init.",
                         init_err.path.display()
                     );
@@ -276,7 +276,7 @@ async fn main() -> Result<()> {
         (ProviderConnection::Http(_), Some(client)) => {
             if !cli.no_stream {
                 if cli.raw {
-                    println!();
+                    qqqa::outln!();
                     let mut raw_buffer = String::new();
                     let summary = client
                         .chat_stream_messages(&eff.model, &messages, cli.debug, |tok| {
@@ -284,7 +284,7 @@ async fn main() -> Result<()> {
                             print_stream_token(tok);
                         })
                         .await?;
-                    println!();
+                    qqqa::outln!();
                     check_answer(
                         &raw_buffer,
                         summary.finish_reason.as_deref(),
@@ -293,7 +293,7 @@ async fn main() -> Result<()> {
                     )?;
                     maybe_copy_first_command(&raw_buffer, copy_enabled, cli.raw, cli.debug);
                 } else {
-                    println!();
+                    qqqa::outln!();
                     let mut buf = String::new();
                     let mut formatter = StreamingFormatter::new();
                     let mut writer = PrettyStreamWriter::new();
@@ -310,7 +310,7 @@ async fn main() -> Result<()> {
                     {
                         writer.write(&tail);
                     }
-                    println!();
+                    qqqa::outln!();
                     check_answer(&buf, summary.finish_reason.as_deref(), client, &eff.model)?;
                     maybe_copy_first_command(&buf, copy_enabled, cli.raw, cli.debug);
                 }
@@ -320,7 +320,7 @@ async fn main() -> Result<()> {
                 drop(loading);
                 let completion = completion?;
                 let full = completion.content;
-                println!();
+                qqqa::outln!();
                 print_assistant_text(&full, cli.raw);
                 check_answer(
                     &full,
@@ -351,7 +351,7 @@ async fn main() -> Result<()> {
             let streaming_enabled = !cli.no_stream && cli_conn.engine.supports_streaming();
 
             if streaming_enabled {
-                println!();
+                qqqa::outln!();
                 if cli.raw {
                     let mut collected = String::new();
                     let fallback = run_cli_completion_streaming(make_request(), |tok| {
@@ -362,7 +362,7 @@ async fn main() -> Result<()> {
                     if collected.is_empty() {
                         collected = fallback;
                     }
-                    println!();
+                    qqqa::outln!();
                     maybe_copy_first_command(&collected, copy_enabled, cli.raw, cli.debug);
                 } else {
                     let mut formatter = StreamingFormatter::new();
@@ -383,7 +383,7 @@ async fn main() -> Result<()> {
                     if collected.is_empty() {
                         collected = fallback;
                     }
-                    println!();
+                    qqqa::outln!();
                     maybe_copy_first_command(&collected, copy_enabled, cli.raw, cli.debug);
                 }
             } else {
@@ -396,7 +396,7 @@ async fn main() -> Result<()> {
                 let loading = start_loading_animation();
                 let response = run_cli_completion(make_request()).await?;
                 drop(loading);
-                println!();
+                qqqa::outln!();
                 print_assistant_text(&response, cli.raw);
                 maybe_copy_first_command(&response, copy_enabled, cli.raw, cli.debug);
             }
@@ -469,7 +469,7 @@ impl PrettyStreamWriter {
         if filtered.is_empty() {
             return;
         }
-        print!("{}", filtered);
+        qqqa::out!("{}", filtered);
         let _ = std::io::stdout().flush();
     }
 
@@ -542,11 +542,11 @@ fn unescape_entities(input: &str) -> String {
 }
 
 fn print_copy_notice(raw_output: bool) {
-    println!();
+    qqqa::outln!();
     if raw_output {
-        println!("<info>Copied first command to clipboard</info>");
+        qqqa::outln!("<info>Copied first command to clipboard</info>");
     } else {
-        println!(
+        qqqa::outln!(
             "{}",
             render_xmlish_to_ansi("<info>Copied first command to clipboard</info>")
         );
@@ -576,7 +576,7 @@ fn persist_config_flags(cli: &Cli) -> Result<()> {
             cfg.set_copy_first_command(true);
             changed = true;
         }
-        println!("Auto-copy first command: enabled (persisted).");
+        qqqa::outln!("Auto-copy first command: enabled (persisted).");
     }
 
     if cli.disable_auto_copy {
@@ -584,7 +584,7 @@ fn persist_config_flags(cli: &Cli) -> Result<()> {
             cfg.set_copy_first_command(false);
             changed = true;
         }
-        println!("Auto-copy first command: disabled (persisted).");
+        qqqa::outln!("Auto-copy first command: disabled (persisted).");
     }
 
     if changed {

@@ -3,8 +3,10 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use httpmock::Method::POST;
 use httpmock::MockServer;
+use std::io::Read;
 use std::net::TcpListener;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use tempfile::tempdir;
 
 fn sandbox_blocks_binding() -> bool {
@@ -163,6 +165,47 @@ fn qq_fails_on_empty_answer() {
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("empty answer"));
+}
+
+#[test]
+fn qq_into_closed_pipe_exits_quietly() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let server = MockServer::start();
+    let lines: Vec<String> = (0..2000).map(|i| format!("line {i}\n")).collect();
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    mock_reply(&server, "text/event-stream", &sse(&refs));
+    let home = tempdir().unwrap();
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin!("qq"))
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", "")
+        .env("OPENROUTER_API_KEY", "test")
+        .current_dir(home.path())
+        .args(["-n", "-r", "--api-base", &server.base_url(), "x"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first = [0u8; 16];
+    child
+        .stdout
+        .as_mut()
+        .unwrap()
+        .read_exact(&mut first)
+        .unwrap();
+    drop(child.stdout.take()); // like `| head -c 16`
+    let status = child.wait().unwrap();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(status.success(), "status {status:?}, stderr {stderr}");
 }
 
 #[test]

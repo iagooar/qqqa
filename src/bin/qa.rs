@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
             }
             Err(e) => match e.downcast::<InitExistsError>() {
                 Ok(init_err) => {
-                    println!(
+                    qqqa::outln!(
                         "Keeping your existing config at {}.\nMove or remove that file if you want to rerun --init.",
                         init_err.path.display()
                     );
@@ -322,7 +322,7 @@ async fn main() -> Result<()> {
             )
             .await?;
             if !handled {
-                println!("Unknown tool call: {}", name);
+                qqqa::outln!("Unknown tool call: {}", name);
             }
         }
         AssistantReply::Content(assistant) => {
@@ -350,7 +350,7 @@ async fn main() -> Result<()> {
                     },
                 },
                 Err(_) => {
-                    println!("{}", assistant.trim_end());
+                    qqqa::outln!("{}", assistant.trim_end());
                 }
             }
         }
@@ -591,12 +591,12 @@ async fn execute_tool_call(
 }
 
 fn print_tool_result(tool: &str, result: &str) {
-    println!("[tool:{}]", tool);
-    println!("{}", result.trim_end());
+    qqqa::outln!("[tool:{}]", tool);
+    qqqa::outln!("{}", result.trim_end());
 }
 
 fn print_tool_error(tool: &str, err: &str) {
-    println!("[tool:{}:error] {}", tool, err);
+    qqqa::outln!("[tool:{}:error] {}", tool, err);
 }
 
 fn normalize_tool_arguments(raw: &str) -> Result<String> {

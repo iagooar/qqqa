@@ -9,6 +9,31 @@ use std::time::Duration;
 
 static COLOR_OUTPUT_ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// Write to stdout and flush. When stdout is a closed pipe (`qq ... | head`),
+/// end the process quietly with status 0, as other filters do, instead of the
+/// panic that `print!` gives.
+pub fn write_stdout(text: &str) {
+    let mut out = std::io::stdout().lock();
+    if let Err(err) = out.write_all(text.as_bytes()).and_then(|()| out.flush())
+        && err.kind() == std::io::ErrorKind::BrokenPipe
+    {
+        std::process::exit(0);
+    }
+}
+
+/// `print!` that ends quietly on a closed pipe; see [`write_stdout`].
+#[macro_export]
+macro_rules! out {
+    ($($arg:tt)*) => { $crate::formatting::write_stdout(&format!($($arg)*)) };
+}
+
+/// `println!` that ends quietly on a closed pipe; see [`write_stdout`].
+#[macro_export]
+macro_rules! outln {
+    () => { $crate::formatting::write_stdout("\n") };
+    ($($arg:tt)*) => { $crate::formatting::write_stdout(&(format!($($arg)*) + "\n")) };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MarkupTag {
     Bold,
@@ -330,18 +355,17 @@ pub fn status_thinking() {
 
 /// Print streamed token to stdout. We avoid buffering to keep latency low.
 pub fn print_stream_token(token: &str) {
-    print!("{}", token);
-    let _ = std::io::Write::flush(&mut std::io::stdout());
+    write_stdout(token);
 }
 
 /// Print a full, non-streamed assistant message.
 pub fn print_assistant_text(text: &str, raw: bool) {
     if raw {
-        println!("{}", text);
+        crate::outln!("{}", text);
     } else {
         let rendered = render_xmlish_to_ansi(text);
         let compacted = compact_blank_lines(&rendered);
-        println!("{}", compacted.trim_end());
+        crate::outln!("{}", compacted.trim_end());
     }
 }
 
@@ -352,31 +376,35 @@ pub struct LoadingAnimation {
 }
 
 impl LoadingAnimation {
-    pub fn stop(mut self) {
+    pub fn stop(self) {
+        drop(self);
+    }
+
+    fn halt(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(h) = self.handle.take() {
+            // Wake the thread from its frame wait so stopping is immediate.
+            h.thread().unpark();
             let _ = h.join();
+            eprint!("\r        \r");
+            let _ = std::io::stderr().flush();
         }
-        // Clear the line
-        eprint!("\r        \r");
-        let _ = std::io::stderr().flush();
     }
 }
 
 impl Drop for LoadingAnimation {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
-        eprint!("\r        \r");
-        let _ = std::io::stderr().flush();
+        self.halt();
     }
 }
 
 /// Start the cyclic dot animation on stderr. Returns a handle that stops it when dropped.
+/// Nothing is drawn when stderr is not a terminal.
 pub fn start_loading_animation() -> LoadingAnimation {
     let stop = Arc::new(AtomicBool::new(false));
+    if !std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        return LoadingAnimation { stop, handle: None };
+    }
     let stop_cl = stop.clone();
     let handle = thread::spawn(move || {
         let mut n: u8 = 1;
@@ -389,7 +417,7 @@ pub fn start_loading_animation() -> LoadingAnimation {
             eprint!("\r{}", dots);
             let _ = std::io::stderr().flush();
             n = if n >= 3 { 1 } else { n + 1 };
-            thread::sleep(Duration::from_millis(300));
+            thread::park_timeout(Duration::from_millis(300));
         }
     });
     LoadingAnimation {
