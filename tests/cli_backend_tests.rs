@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
 use anyhow::Result;
-use qqqa::ai::{CliCompletionRequest, run_cli_completion};
+use qqqa::ai::{CliCompletionRequest, run_cli_completion, run_cli_completion_streaming};
 use qqqa::config::CliEngine;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -221,13 +221,16 @@ async fn run_cli_completion_invokes_claude_with_expected_args() {
     let dir = tempdir().unwrap();
     let script_path = dir.path().join("fake_claude");
     let args_dump = dir.path().join("claude_args.txt");
+    let prompt_dump = dir.path().join("claude_prompt.txt");
     let script = format!(
         r#"#!/bin/sh
 set -eu
 printf '%s\0' "$@" > "{args}"
+cat > "{prompt}"
 printf '%s' '{{"type":"result","subtype":"success","result":"<cmd>echo hi</cmd>"}}'
 "#,
-        args = args_dump.display()
+        args = args_dump.display(),
+        prompt = prompt_dump.display()
     );
     write_executable_script(&script_path, &script);
 
@@ -257,15 +260,17 @@ printf '%s' '{{"type":"result","subtype":"success","result":"<cmd>echo hi</cmd>"
         "claude-haiku-4-5",
         "--append-system-prompt",
         "<system-prompt>\nSYSTEM\n</system-prompt>",
-        "--disallowed-tools",
-        "Bash(*) Edit",
-        "--",
-        "<user-prompt>\nUSER\n</user-prompt>",
+        "--tools=",
+        "--strict-mcp-config",
     ]
     .into_iter()
     .map(String::from)
     .collect();
     assert_eq!(args, expected);
+    assert_eq!(
+        fs::read_to_string(&prompt_dump).unwrap(),
+        "<user-prompt>\nUSER\n</user-prompt>"
+    );
 }
 
 async fn codex_args(model_explicit: bool) -> Vec<String> {
@@ -411,4 +416,63 @@ async fn cli_timeout_kills_the_whole_process_group() {
     // SAFETY: signal 0 only checks whether the process exists.
     let alive = unsafe { libc::kill(pid, 0) } == 0;
     assert!(!alive, "grandchild {pid} survived the timeout");
+}
+
+fn claude_request<'a>(binary: &'a str, prompt: &'a str) -> CliCompletionRequest<'a> {
+    CliCompletionRequest {
+        engine: CliEngine::Claude,
+        binary,
+        base_args: &[],
+        system_prompt: "SYSTEM",
+        user_prompt: prompt,
+        model: "claude-haiku-4-5",
+        model_explicit: false,
+        reasoning_effort: None,
+        debug: false,
+        timeout: Duration::from_secs(10),
+    }
+}
+
+#[tokio::test]
+async fn claude_takes_a_large_prompt_on_stdin() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("fake_claude_big");
+    write_executable_script(
+        &script,
+        "#!/bin/sh\nbytes=$(wc -c)\nprintf '{\"type\":\"result\",\"result\":\"%s\"}' \"$bytes\"\n",
+    );
+    // Far above the 128 KiB per-argument limit on Linux and ARG_MAX on macOS.
+    let prompt = "x".repeat(1_500_000);
+    let text = run_cli_completion_with_retry(|| claude_request(script.to_str().unwrap(), &prompt))
+        .await
+        .expect("large prompt works");
+    let bytes: usize = text.trim().parse().unwrap();
+    assert!(bytes > 1_500_000, "{bytes}");
+}
+
+#[tokio::test]
+async fn claude_streaming_reads_the_prompt_from_stdin() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("fake_claude_stream");
+    let prompt_dump = dir.path().join("stream_prompt.txt");
+    write_executable_script(
+        &script,
+        &format!(
+            "#!/bin/sh\ncat > \"{}\"\nprintf '%s\\n' '{{\"type\":\"stream_event\",\"event\":{{\"type\":\"content_block_delta\",\"delta\":{{\"text\":\"streamed\"}}}}}}'\n",
+            prompt_dump.display()
+        ),
+    );
+    let mut seen = String::new();
+    let text =
+        run_cli_completion_streaming(claude_request(script.to_str().unwrap(), "USER"), |t| {
+            seen.push_str(t)
+        })
+        .await
+        .expect("stream works");
+    assert_eq!(text, "streamed");
+    assert_eq!(seen, "streamed");
+    assert_eq!(
+        fs::read_to_string(&prompt_dump).unwrap(),
+        "<user-prompt>\nUSER\n</user-prompt>"
+    );
 }

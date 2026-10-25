@@ -80,6 +80,7 @@ What to know:
 
 - Install Claude Code so the `claude` binary is on your `PATH`, then run `claude login` once.
 - Claude Code streams responses the same way API-based LLMs do.
+- qqqa runs `claude -p` with no built-in tools and no MCP servers (`--tools= --strict-mcp-config`), so it only produces text and each request stays small. The prompt goes on stdin, so large piped input works. This needs a Claude Code release that supports `--tools`.
 - Need to pin a different Claude desktop model? Add `"model_override": "claude-haiku-4-5"` under `model_providers.claude_cli.cli` in `~/.qq/config.json`. That override only applies to the Claude CLI; `qq -m/--model` still takes precedence per run.
 
 Minimal config snippet:

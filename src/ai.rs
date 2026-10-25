@@ -832,7 +832,7 @@ mod cli_backend {
 
     async fn run_claude(req: CliCompletionRequest<'_>) -> Result<String> {
         let cmd = build_claude_command(&req, false);
-        let stdout = run_buffered(cmd, None, &req).await?;
+        let stdout = run_buffered(cmd, Some(tagged_user_prompt(req.user_prompt)), &req).await?;
         parse_claude_response(&stdout)
     }
 
@@ -854,12 +854,20 @@ mod cli_backend {
 
         configure_child(&mut cmd);
         let mut child = cmd
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| spawn_error(req.binary, e))?;
         let pid = child.id();
+        // Written from a task so a large prompt cannot block reading the stream.
+        let prompt = tagged_user_prompt(req.user_prompt);
+        let writer = child.stdin.take().map(|mut pipe| {
+            tokio::spawn(async move {
+                let _ = pipe.write_all(prompt.as_bytes()).await;
+                let _ = pipe.shutdown().await;
+            })
+        });
 
         let stdout = child
             .stdout
@@ -941,6 +949,9 @@ mod cli_backend {
             }
         };
         let stderr = take_stderr_output(&mut stderr).await;
+        if let Some(writer) = writer {
+            writer.abort();
+        }
 
         if !status.success() {
             return Err(anyhow!(
@@ -989,10 +1000,12 @@ mod cli_backend {
         }
         cmd.arg("--append-system-prompt");
         cmd.arg(tagged_system_prompt(req.system_prompt));
-        cmd.arg("--disallowed-tools");
-        cmd.arg("Bash(*) Edit");
-        cmd.arg("--");
-        cmd.arg(tagged_user_prompt(req.user_prompt));
+        // qq and qa only need text back. No built-in tools and no MCP servers
+        // keeps each request small (the tool definitions alone are ~74 KB).
+        cmd.arg("--tools=");
+        cmd.arg("--strict-mcp-config");
+        // The user prompt (with any piped input) goes on stdin, not argv: argv
+        // is capped (128 KiB per argument on Linux) and visible in `ps`.
         cmd
     }
 
