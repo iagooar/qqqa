@@ -149,6 +149,26 @@ pub struct Profile {
     pub extra: serde_json::Map<String, Value>,
 }
 
+impl Profile {
+    /// A profile with only a provider and a model set.
+    pub fn on(model_provider: &str, model: &str) -> Self {
+        Profile {
+            model_provider: model_provider.to_string(),
+            model: model.to_string(),
+            reasoning_effort: None,
+            temperature: None,
+            timeout: None,
+            prompt_suffix: None,
+            system_prompt: None,
+            system_prompt_file: None,
+            max_tokens: None,
+            reasoning_max_tokens: None,
+            extra_body: Default::default(),
+            extra: Default::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub default_profile: String,
@@ -377,7 +397,7 @@ impl Default for Config {
             "openrouter".to_string(),
             Profile {
                 model_provider: "openrouter".to_string(),
-                model: "openai/gpt-4.1-nano".to_string(),
+                model: "qwen/qwen3.8-27b".to_string(),
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
@@ -386,15 +406,28 @@ impl Default for Config {
                 system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
-                extra_body: Default::default(),
+                // Cerebras serves this model far faster than other hosts
+                // (about 0.5 s per answer); OpenRouter may still fall back.
+                extra_body: serde_json::Map::from_iter([(
+                    "provider".to_string(),
+                    serde_json::json!({"order": ["cerebras"]}),
+                )]),
                 extra: Default::default(),
             },
+        );
+        profiles.insert(
+            "luna".to_string(),
+            Profile::on("openrouter", "openai/gpt-6-luna"),
+        );
+        profiles.insert(
+            "haiku".to_string(),
+            Profile::on("openrouter", "anthropic/claude-haiku-5.5"),
         );
         profiles.insert(
             "openai".to_string(),
             Profile {
                 model_provider: "openai".to_string(),
-                model: "gpt-5-mini".to_string(),
+                model: "gpt-6-luna".to_string(),
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
@@ -428,7 +461,7 @@ impl Default for Config {
             "anthropic".to_string(),
             Profile {
                 model_provider: "anthropic".to_string(),
-                model: "claude-3-5-sonnet-20241022".to_string(),
+                model: "claude-haiku-5-5".to_string(),
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
@@ -479,7 +512,7 @@ impl Default for Config {
             "claude_cli".to_string(),
             Profile {
                 model_provider: "claude_cli".to_string(),
-                model: "claude-haiku-4-5".to_string(),
+                model: "claude-haiku-5-5".to_string(),
                 reasoning_effort: None,
                 temperature: None,
                 timeout: None,
@@ -975,10 +1008,10 @@ impl Config {
 
         println!("qqqa init — set up your provider and API key");
         println!("\nChoose default profile:");
-        println!("  [1] OpenRouter — openai/gpt-4.1-nano (fast, inexpensive)");
+        println!("  [1] OpenRouter — qwen/qwen3.8-27b on Cerebras (very fast, inexpensive)");
         println!("  [2] Groq  — openai/gpt-oss-20b (fast, cheap)");
-        println!("  [3] OpenAI — gpt-5-mini (slower, a bit smarter)");
-        println!("  [4] Anthropic — claude-3-5-sonnet-20241022 (Claude by Anthropic)");
+        println!("  [3] OpenAI — gpt-6-luna (inexpensive)");
+        println!("  [4] Anthropic — claude-haiku-5-5 (Claude by Anthropic)");
         println!("  [5] Ollama — llama3.1 via http://127.0.0.1:11434/v1 (runs locally)");
         println!(
             "  [6] Codex CLI — leverage the installed `codex` binary (uses your ChatGPT subscription)"

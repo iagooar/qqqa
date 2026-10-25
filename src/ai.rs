@@ -245,13 +245,21 @@ impl ChatClient {
             .to_ascii_lowercase()
     }
 
-    /// OpenAI reasoning models (GPT-5 family, o1/o3/o4…): they take
+    /// OpenAI reasoning models (GPT-5 and later, o1/o3/o4…): they take
     /// `max_completion_tokens`, reject a custom temperature, and count
     /// reasoning tokens against the output cap.
     fn is_reasoning_model(model: &str) -> bool {
         let base = Self::base_model(model);
         let o_series = base.starts_with('o') && base[1..].starts_with(|c: char| c.is_ascii_digit());
-        base.starts_with("gpt-5") || o_series
+        let gpt_major = base
+            .strip_prefix("gpt-")
+            .map(|rest| {
+                rest.chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+            })
+            .and_then(|digits| digits.parse::<u32>().ok());
+        o_series || gpt_major.is_some_and(|major| major >= 5)
     }
 
     fn max_tokens_param(model: &str) -> &'static str {
@@ -1487,6 +1495,12 @@ mod tests {
                 json!({"max_completion_tokens": 16384, "reasoning_effort": "minimal"}),
             ),
             ("gpt-5.1", json!({"max_completion_tokens": 16384})),
+            ("gpt-6-luna", json!({"max_completion_tokens": 16384})),
+            ("openai/gpt-6-luna", json!({"max_completion_tokens": 16384})),
+            (
+                "gpt-4o",
+                json!({"max_tokens": 4096, "temperature": 0.15f32}),
+            ),
             ("o1-preview", json!({"max_completion_tokens": 16384})),
             ("o3-mini", json!({"max_completion_tokens": 16384})),
             ("o4-mini", json!({"max_completion_tokens": 16384})),

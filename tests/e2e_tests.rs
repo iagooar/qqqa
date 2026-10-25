@@ -620,8 +620,9 @@ fn qq_sends_configured_headers_and_extra_body() {
             .header("x-custom", "yes")
             .header("x-title", "qqqa")
             .body_contains(r#""provider":{"order":["groq"]}"#)
+            .body_contains(r#""seed":7"#)
             .body_contains("middle-out")
-            .body_contains(r#""model":"openai/gpt-4.1-nano""#);
+            .body_contains(r#""model":"qwen/qwen3.8-27b""#);
         then.status(200)
             .header("content-type", "text/event-stream")
             .body(sse(&["routed"]));
@@ -632,9 +633,14 @@ fn qq_sends_configured_headers_and_extra_body() {
         &serde_json::json!({
             "model_providers": {"openrouter": {
                 "headers": {"X-Custom": "yes"},
-                "extra_body": {"provider": {"order": ["groq"]}, "model": "not-this"}
+                "extra_body": {"seed": 7, "model": "not-this"}
             }},
-            "profiles": {"openrouter": {"extra_body": {"transforms": ["middle-out"]}}}
+            // The default openrouter profile routes to Cerebras; a user's
+            // profile extra_body replaces that key and adds its own.
+            "profiles": {"openrouter": {"extra_body": {
+                "provider": {"order": ["groq"]},
+                "transforms": ["middle-out"]
+            }}}
         }),
     );
     let out = qq(home.path(), &server)
