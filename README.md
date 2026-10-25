@@ -2,7 +2,13 @@
 
 Fast, stateless LLM-powered assistant for your shell: qq answers; qa runs commands
 
-> **Status:** feature-complete. Maintained for bug fixes and security issues; no new features planned. See [#61](https://github.com/iagooar/qqqa/issues/61).
+## Status: feature-complete, and thank you
+
+qqqa started as a small itch: I was tired of switching to a browser for shell commands I always forget. Then it [launched on Hacker News](https://news.ycombinator.com/item?id=45833811), drew 165 points and 86 comments, and went well past anything I expected. Today it has more than 600 stars on GitHub, it ships in Homebrew core, and it runs on macOS, Linux and Windows.
+
+Much of qqqa came straight from that thread and the issues that followed: piped input, OpenRouter, local models through Ollama, Homebrew, privacy-first history, a tighter sandbox for `qa`, and support for Codex and Claude Code subscriptions. Thank you to everyone who starred it, filed an issue, sent a PR or argued about it on HN. You made it a much better tool.
+
+With [1.1.0](https://github.com/iagooar/qqqa/releases/tag/v1.1.0), qqqa does what it set out to do: quick answers and one-step tasks in your shell, fast, stateless, and out of your way. So it's done, on purpose. It stays on Homebrew and GitHub Releases, keeps building, and gets bug and security fixes; no new features are planned. Small PRs that fit its scope are still welcome. More in [#61](https://github.com/iagooar/qqqa/issues/61).
 
 ## What is qqqa
 
