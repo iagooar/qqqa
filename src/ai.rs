@@ -739,6 +739,9 @@ mod cli_backend {
         pub system_prompt: &'a str,
         pub user_prompt: &'a str,
         pub model: &'a str,
+        /// The user chose `model` (`-m` or `model_override`). Codex gets `-m`
+        /// only then; its profile model is a display label.
+        pub model_explicit: bool,
         pub reasoning_effort: Option<&'a str>,
         pub debug: bool,
         pub timeout: Duration,
@@ -783,6 +786,10 @@ mod cli_backend {
             cmd.arg("--skip-git-repo-check");
         }
         cmd.arg("--json");
+        if req.model_explicit && !req.model.trim().is_empty() {
+            cmd.arg("-m");
+            cmd.arg(req.model);
+        }
         let reasoning = req.reasoning_effort.unwrap_or("low");
         cmd.arg("-c");
         cmd.arg(format!("model_reasoning_effort={}", reasoning));

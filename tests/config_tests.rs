@@ -789,3 +789,26 @@ fn values_without_a_default_are_saved_exactly() {
         .unwrap();
     assert_eq!(read_json(&path)["profiles"]["mine"]["model"], "m");
 }
+
+#[test]
+fn codex_model_is_explicit_only_for_flag_or_override() {
+    let mut cfg = Config::default();
+    let cli_explicit = |cfg: &Config, flag: Option<&str>| match cfg
+        .resolve_profile(Some("codex"), flag, None)
+        .unwrap()
+        .connection
+    {
+        ProviderConnection::Cli(c) => c.model_explicit,
+        _ => panic!("codex is a CLI provider"),
+    };
+    assert!(!cli_explicit(&cfg, None));
+    assert!(cli_explicit(&cfg, Some("o3")));
+    cfg.model_providers
+        .get_mut("codex")
+        .unwrap()
+        .cli
+        .as_mut()
+        .unwrap()
+        .model_override = Some("gpt-5.1-codex".into());
+    assert!(cli_explicit(&cfg, None));
+}

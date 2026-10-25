@@ -561,6 +561,9 @@ pub struct CliConnection {
     pub binary: String,
     pub base_args: Vec<String>,
     pub request_timeout_secs: Option<u64>,
+    /// True when the model came from `-m` or the CLI block's `model_override`,
+    /// not from the profile's default label.
+    pub model_explicit: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -833,6 +836,7 @@ impl Config {
         let mut model = user_model_override
             .clone()
             .unwrap_or_else(|| profile.model.clone());
+        let mut model_explicit = user_model_override.is_some();
         if user_model_override.is_none()
             && matches!(effective_mode, ProviderMode::Cli)
             && let Some(cli) = provider.cli.as_ref()
@@ -843,6 +847,7 @@ impl Config {
                 .filter(|m| !m.is_empty())
         {
             model = override_model.to_string();
+            model_explicit = true;
         }
 
         let connection = match effective_mode {
@@ -898,6 +903,7 @@ impl Config {
                     binary: cli.binary.clone(),
                     base_args: cli.base_args.clone(),
                     request_timeout_secs,
+                    model_explicit,
                 })
             }
         };

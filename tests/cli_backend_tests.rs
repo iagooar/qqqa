@@ -90,6 +90,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"h
         system_prompt: "SYSTEM",
         user_prompt: "USER",
         model: "gpt-5",
+        model_explicit: false,
         reasoning_effort: Some("minimal"),
         debug: true,
         timeout: Duration::from_secs(5),
@@ -127,6 +128,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         system_prompt: "SYSTEM",
         user_prompt: "USER",
         model: "gpt-5",
+        model_explicit: false,
         reasoning_effort: Some("low"),
         debug: false,
         timeout: Duration::from_secs(5),
@@ -183,6 +185,7 @@ printf '%s\n' '{{"session_id":"test","response":"gemini ok"}}'
         system_prompt: "SYSTEM",
         user_prompt: "USER",
         model: "gemini-3-flash-preview",
+        model_explicit: false,
         reasoning_effort: None,
         debug: false,
         timeout: Duration::from_secs(5),
@@ -235,6 +238,7 @@ printf '%s' '{{"type":"result","subtype":"success","result":"<cmd>echo hi</cmd>"
         system_prompt: "SYSTEM",
         user_prompt: "USER",
         model: "claude-haiku-4-5",
+        model_explicit: false,
         reasoning_effort: None,
         debug: false,
         timeout: Duration::from_secs(5),
@@ -262,4 +266,43 @@ printf '%s' '{{"type":"result","subtype":"success","result":"<cmd>echo hi</cmd>"
     .map(String::from)
     .collect();
     assert_eq!(args, expected);
+}
+
+async fn codex_args(model_explicit: bool) -> Vec<String> {
+    let dir = tempdir().unwrap();
+    let script_path = dir.path().join("fake_codex_args");
+    let args_dump = dir.path().join("codex_args.txt");
+    let script = format!(
+        r#"#!/bin/sh
+printf '%s\0' "$@" > "{args}"
+cat > /dev/null
+printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"ok"}}}}'
+"#,
+        args = args_dump.display()
+    );
+    write_executable_script(&script_path, &script);
+    run_cli_completion_with_retry(|| CliCompletionRequest {
+        engine: CliEngine::Codex,
+        binary: script_path.to_str().unwrap(),
+        base_args: &[],
+        system_prompt: "SYSTEM",
+        user_prompt: "USER",
+        model: "o3",
+        model_explicit,
+        reasoning_effort: None,
+        debug: false,
+        timeout: Duration::from_secs(5),
+    })
+    .await
+    .expect("cli run succeeds");
+    read_args(&args_dump)
+}
+
+#[tokio::test]
+async fn codex_gets_the_model_only_when_the_user_chose_it() {
+    let chosen = codex_args(true).await;
+    let pos = chosen.iter().position(|a| a == "-m").expect("-m passed");
+    assert_eq!(chosen[pos + 1], "o3");
+    let default = codex_args(false).await;
+    assert!(!default.iter().any(|a| a == "-m"), "{default:?}");
 }

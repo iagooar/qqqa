@@ -348,6 +348,7 @@ async fn main() -> Result<()> {
                 system_prompt: &system,
                 user_prompt: &user,
                 model: &eff.model,
+                model_explicit: cli_conn.model_explicit,
                 reasoning_effort: eff.reasoning_effort.as_deref(),
                 debug: cli.debug,
                 timeout,
