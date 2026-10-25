@@ -860,6 +860,7 @@ mod cli_backend {
             .spawn()
             .map_err(|e| spawn_error(req.binary, e))?;
         let pid = child.id();
+        let _interrupt_guard = crate::interrupt::track_group(pid);
         // Written from a task so a large prompt cannot block reading the stream.
         let prompt = tagged_user_prompt(req.user_prompt);
         let writer = child.stdin.take().map(|mut pipe| {
@@ -895,10 +896,6 @@ mod cli_backend {
                     kill_tree(&mut child, pid).await;
                     let _ = take_stderr_output(&mut stderr).await;
                     return Err(timeout_error(req.binary, req.timeout));
-                }
-                _ = tokio::signal::ctrl_c() => {
-                    kill_tree(&mut child, pid).await;
-                    return Err(anyhow!("Interrupted"));
                 }
             };
 
@@ -942,10 +939,6 @@ mod cli_backend {
                 kill_tree(&mut child, pid).await;
                 let _ = take_stderr_output(&mut stderr).await;
                 return Err(timeout_error(req.binary, req.timeout));
-            }
-            _ = tokio::signal::ctrl_c() => {
-                kill_tree(&mut child, pid).await;
-                return Err(anyhow!("Interrupted"));
             }
         };
         let stderr = take_stderr_output(&mut stderr).await;
@@ -1038,6 +1031,7 @@ mod cli_backend {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| spawn_error(req.binary, e))?;
+        let _interrupt_guard = crate::interrupt::track_group(child.id());
         let output = wait_with_timeout(&mut child, stdin, req.timeout, req.binary).await?;
         if !output.status.success() {
             return Err(exit_error(req.binary, &output));
@@ -1104,12 +1098,6 @@ mod cli_backend {
         )
     }
 
-    enum Ended {
-        Exited(std::io::Result<std::process::ExitStatus>),
-        TimedOut,
-        Interrupted,
-    }
-
     async fn wait_with_timeout(
         child: &mut tokio::process::Child,
         stdin: Option<String>,
@@ -1131,22 +1119,13 @@ mod cli_backend {
             _ => None,
         };
 
-        let ended = tokio::select! {
-            r = tokio::time::timeout(timeout, child.wait()) => match r {
-                Ok(status) => Ended::Exited(status),
-                Err(_) => Ended::TimedOut,
-            },
-            _ = tokio::signal::ctrl_c() => Ended::Interrupted,
-        };
-        let status = match ended {
-            Ended::Exited(status) => status?,
-            Ended::TimedOut => {
+        // Ctrl-C is handled process-wide (crate::interrupt), which kills this
+        // group too; see `track_group` in run_buffered.
+        let status = match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(status) => status?,
+            Err(_) => {
                 kill_tree(child, pid).await;
                 return Err(timeout_error(binary, timeout));
-            }
-            Ended::Interrupted => {
-                kill_tree(child, pid).await;
-                return Err(anyhow!("Interrupted"));
             }
         };
         if let Some(writer) = writer {

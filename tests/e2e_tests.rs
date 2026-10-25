@@ -686,3 +686,111 @@ fn qq_uses_a_configured_system_prompt() {
     );
     assert_eq!(custom.hits(), 1);
 }
+
+fn wait_with_deadline(child: &mut std::process::Child, secs: u64) -> std::process::ExitStatus {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("process did not exit within {secs}s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn send_sigint(child: &std::process::Child) {
+    // SAFETY: plain kill(2) on our own child.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGINT);
+    }
+}
+
+#[test]
+fn ctrl_c_exits_with_130_while_waiting_for_the_api() {
+    // A server that accepts the connection and never answers.
+    let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
+        return;
+    };
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (connected_tx, connected_rx) = std::sync::mpsc::channel();
+    let _hold = std::thread::spawn(move || {
+        let conn = listener.incoming().next();
+        let _ = connected_tx.send(());
+        let _keep = conn;
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    });
+    let home = tempdir().unwrap();
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin!("qq"))
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", "")
+        .env("OPENROUTER_API_KEY", "test")
+        .current_dir(home.path())
+        .args(["-n", "-r", "--api-base", &base, "x"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // qq is past startup once it has connected and is waiting for the answer.
+    connected_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("qq connected");
+    send_sigint(&child);
+    assert_eq!(wait_with_deadline(&mut child, 10).code(), Some(130));
+}
+
+#[test]
+fn ctrl_c_kills_a_running_cli_provider_and_its_children() {
+    let home = tempdir().unwrap();
+    let fake = home.path().join("fake_codex");
+    let pid_file = home.path().join("grandchild.pid");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nsleep 47 &\necho $! > \"{}\"\nsleep 30\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    write_config(
+        home.path(),
+        &serde_json::json!({"model_providers": {"codex": {"cli": {"binary": fake.to_str().unwrap()}}}}),
+    );
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin!("qq"))
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", "")
+        .current_dir(home.path())
+        .args(["-n", "-p", "codex", "x"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !pid_file.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fake provider never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    send_sigint(&child);
+    assert_eq!(wait_with_deadline(&mut child, 10).code(), Some(130));
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    // SAFETY: signal 0 only checks whether the process exists.
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    assert!(!alive, "provider child {pid} survived Ctrl-C");
+}

@@ -106,6 +106,7 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse_from(normalized_cli_args());
+    qqqa::interrupt::install();
     configure_color_output();
 
     // Run interactive init if requested.

@@ -69,6 +69,7 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    qqqa::interrupt::install();
 
     if cli.init {
         match Config::init_interactive(cli.debug) {
