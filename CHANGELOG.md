@@ -2,6 +2,8 @@
 
 All notable changes to qqqa. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
 ## [1.1.0] - 2026-10-25
 
 A correctness release: qq and qa now show exactly what the model wrote, report every failure with a non-zero exit code, and behave in pipes and scripts. The config file holds only your own changes, and the default models are newer and faster.
