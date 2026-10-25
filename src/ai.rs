@@ -802,60 +802,7 @@ mod cli_backend {
             tagged_system_prompt(req.system_prompt),
             tagged_user_prompt(req.user_prompt)
         );
-
-        if req.debug {
-            eprintln!(
-                "[debug] Running CLI provider '{}' with args: {:?}",
-                req.binary, cmd
-            );
-        }
-
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "Failed to spawn CLI provider '{}'. Is it installed and on your PATH?",
-                    req.binary
-                )
-            })?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .await
-                .context("Writing prompt to CLI provider stdin")?;
-        }
-
-        let output = wait_child_output_with_timeout(child, req.timeout, req.binary).await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(anyhow!(
-                "CLI provider '{}' exited with status {}.{}{}",
-                req.binary,
-                output
-                    .status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".to_string()),
-                if stdout.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!("\nstdout: {}", stdout.trim())
-                },
-                if stderr.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!("\nstderr: {}", stderr.trim())
-                }
-            ));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = run_buffered(cmd, Some(prompt), &req).await?;
         parse_codex_response(&stdout)
     }
 
@@ -879,111 +826,13 @@ mod cli_backend {
             tagged_system_prompt(req.system_prompt),
             tagged_user_prompt(req.user_prompt)
         );
-
-        if req.debug {
-            eprintln!(
-                "[debug] Running CLI provider '{}' with args: {:?}",
-                req.binary, cmd
-            );
-        }
-
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "Failed to spawn CLI provider '{}'. Is it installed and on your PATH?",
-                    req.binary
-                )
-            })?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .await
-                .context("Writing prompt to CLI provider stdin")?;
-        }
-
-        let output = wait_child_output_with_timeout(child, req.timeout, req.binary).await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(anyhow!(
-                "CLI provider '{}' exited with status {}.{}{}",
-                req.binary,
-                output
-                    .status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".to_string()),
-                if stdout.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!("\nstdout: {}", stdout.trim())
-                },
-                if stderr.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!("\nstderr: {}", stderr.trim())
-                }
-            ));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = run_buffered(cmd, Some(prompt), &req).await?;
         parse_gemini_response(&stdout)
     }
 
     async fn run_claude(req: CliCompletionRequest<'_>) -> Result<String> {
-        let mut cmd = build_claude_command(&req, false);
-
-        if req.debug {
-            eprintln!(
-                "[debug] Running CLI provider '{}' with args: {:?}",
-                req.binary, cmd
-            );
-        }
-
-        let child = cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "Failed to spawn CLI provider '{}'. Is it installed and on your PATH?",
-                    req.binary
-                )
-            })?;
-
-        let output = wait_child_output_with_timeout(child, req.timeout, req.binary).await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(anyhow!(
-                "CLI provider '{}' exited with status {}.{}{}",
-                req.binary,
-                output
-                    .status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".to_string()),
-                if stdout.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!("\nstdout: {}", stdout.trim())
-                },
-                if stderr.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!("\nstderr: {}", stderr.trim())
-                }
-            ));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let cmd = build_claude_command(&req, false);
+        let stdout = run_buffered(cmd, None, &req).await?;
         parse_claude_response(&stdout)
     }
 
@@ -1003,16 +852,14 @@ mod cli_backend {
             );
         }
 
+        configure_child(&mut cmd);
         let mut child = cmd
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| {
-                format!(
-                    "Failed to spawn CLI provider '{}'. Is it installed and on your PATH?",
-                    req.binary
-                )
-            })?;
+            .map_err(|e| spawn_error(req.binary, e))?;
+        let pid = child.id();
 
         let stdout = child
             .stdout
@@ -1037,10 +884,13 @@ mod cli_backend {
             let next = tokio::select! {
                 line = reader.next_line() => line?,
                 _ = &mut deadline => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
+                    kill_tree(&mut child, pid).await;
                     let _ = take_stderr_output(&mut stderr).await;
                     return Err(timeout_error(req.binary, req.timeout));
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    kill_tree(&mut child, pid).await;
+                    return Err(anyhow!("Interrupted"));
                 }
             };
 
@@ -1081,10 +931,13 @@ mod cli_backend {
         let status = tokio::select! {
             status = child.wait() => status?,
             _ = &mut deadline => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
+                kill_tree(&mut child, pid).await;
                 let _ = take_stderr_output(&mut stderr).await;
                 return Err(timeout_error(req.binary, req.timeout));
+            }
+            _ = tokio::signal::ctrl_c() => {
+                kill_tree(&mut child, pid).await;
+                return Err(anyhow!("Interrupted"));
             }
         };
         let stderr = take_stderr_output(&mut stderr).await;
@@ -1143,42 +996,152 @@ mod cli_backend {
         cmd
     }
 
-    async fn wait_child_output_with_timeout(
-        mut child: tokio::process::Child,
+    /// How long output readers may keep going after the CLI exits. A helper
+    /// process the CLI left behind can hold the pipes open; it is killed then.
+    const READ_GRACE: Duration = Duration::from_secs(2);
+
+    /// Run a CLI provider: feed `stdin`, collect stdout and stderr, all bounded
+    /// by `req.timeout` (plus [`READ_GRACE`]). Returns stdout, or an error with
+    /// the exit status, stdout and stderr.
+    async fn run_buffered(
+        mut cmd: Command,
+        stdin: Option<String>,
+        req: &CliCompletionRequest<'_>,
+    ) -> Result<String> {
+        if req.debug {
+            eprintln!(
+                "[debug] Running CLI provider '{}' with args: {:?}",
+                req.binary, cmd
+            );
+        }
+        configure_child(&mut cmd);
+        let mut child = cmd
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| spawn_error(req.binary, e))?;
+        let output = wait_with_timeout(&mut child, stdin, req.timeout, req.binary).await?;
+        if !output.status.success() {
+            return Err(exit_error(req.binary, &output));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Kill the child with everything it started when qq gives up on it, and
+    /// let it outlive nothing: its own process group (Unix), killed on drop.
+    fn configure_child(cmd: &mut Command) {
+        cmd.kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
+    }
+
+    /// Kill the child's process group, then the child. `pid` is taken at
+    /// spawn time, because tokio forgets it once the child has been reaped.
+    async fn kill_tree(child: &mut tokio::process::Child, pid: Option<u32>) {
+        #[cfg(not(unix))]
+        let _ = pid;
+        #[cfg(unix)]
+        if let Some(pid) = pid {
+            // SAFETY: plain kill(2) on the child's process group (its pgid is its pid).
+            unsafe {
+                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+            }
+        }
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+
+    /// Keeps the OS error as the source, so callers can still inspect it.
+    fn spawn_error(binary: &str, err: std::io::Error) -> anyhow::Error {
+        let message = if err.kind() == std::io::ErrorKind::NotFound {
+            format!(
+                "Failed to spawn CLI provider '{}'. Is it installed and on your PATH?",
+                binary
+            )
+        } else {
+            format!("Failed to start CLI provider '{}': {}", binary, err)
+        };
+        anyhow::Error::new(err).context(message)
+    }
+
+    fn exit_error(binary: &str, output: &std::process::Output) -> anyhow::Error {
+        let section = |name: &str, bytes: &[u8]| {
+            let text = String::from_utf8_lossy(bytes);
+            if text.trim().is_empty() {
+                String::new()
+            } else {
+                format!("\n{}: {}", name, text.trim())
+            }
+        };
+        anyhow!(
+            "CLI provider '{}' exited with status {}.{}{}",
+            binary,
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string()),
+            section("stdout", &output.stdout),
+            section("stderr", &output.stderr)
+        )
+    }
+
+    enum Ended {
+        Exited(std::io::Result<std::process::ExitStatus>),
+        TimedOut,
+        Interrupted,
+    }
+
+    async fn wait_with_timeout(
+        child: &mut tokio::process::Child,
+        stdin: Option<String>,
         timeout: Duration,
         binary: &str,
     ) -> Result<std::process::Output> {
-        const POLL_INTERVAL_MS: u64 = 25;
+        // Readers start before the prompt is written, so a child that writes a
+        // lot before reading stdin cannot deadlock against us.
+        let pid = child.id();
+        let stdout = child.stdout.take().map(spawn_output_reader);
+        let stderr = child.stderr.take().map(spawn_output_reader);
+        let writer = match (stdin, child.stdin.take()) {
+            (Some(text), Some(mut pipe)) => Some(tokio::spawn(async move {
+                // A child that exits without reading gives EPIPE here; its exit
+                // status and stderr are the real answer, so the error is dropped.
+                let _ = pipe.write_all(text.as_bytes()).await;
+                let _ = pipe.shutdown().await;
+            })),
+            _ => None,
+        };
 
-        let stdout_task = child.stdout.take().map(spawn_output_reader);
-        let stderr_task = child.stderr.take().map(spawn_output_reader);
-
-        let deadline = tokio::time::sleep(timeout);
-        tokio::pin!(deadline);
-
-        let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
+        let ended = tokio::select! {
+            r = tokio::time::timeout(timeout, child.wait()) => match r {
+                Ok(status) => Ended::Exited(status),
+                Err(_) => Ended::TimedOut,
+            },
+            _ = tokio::signal::ctrl_c() => Ended::Interrupted,
+        };
+        let status = match ended {
+            Ended::Exited(status) => status?,
+            Ended::TimedOut => {
+                kill_tree(child, pid).await;
+                return Err(timeout_error(binary, timeout));
             }
-            tokio::select! {
-                _ = &mut deadline => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                    return Err(timeout_error(binary, timeout));
-                }
-                _ = tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)) => {}
+            Ended::Interrupted => {
+                kill_tree(child, pid).await;
+                return Err(anyhow!("Interrupted"));
             }
         };
+        if let Some(writer) = writer {
+            writer.abort();
+        }
 
-        let stdout = match stdout_task {
-            Some(handle) => handle.await??,
-            None => Vec::new(),
-        };
-        let stderr = match stderr_task {
-            Some(handle) => handle.await??,
-            None => Vec::new(),
-        };
-
+        let stdout = collect_output(child, pid, stdout).await;
+        let stderr = collect_output(child, pid, stderr).await;
         Ok(std::process::Output {
             status,
             stdout,
@@ -1186,16 +1149,48 @@ mod cli_backend {
         })
     }
 
-    fn spawn_output_reader<R>(stream: R) -> tokio::task::JoinHandle<Result<Vec<u8>>>
+    /// Wait up to [`READ_GRACE`] for a reader to reach end of file; if a
+    /// leftover helper still holds the pipe, kill the process group.
+    async fn collect_output(
+        child: &mut tokio::process::Child,
+        pid: Option<u32>,
+        reader: Option<OutputReader>,
+    ) -> Vec<u8> {
+        let Some((buf, task)) = reader else {
+            return Vec::new();
+        };
+        if tokio::time::timeout(READ_GRACE, task).await.is_err() {
+            kill_tree(child, pid).await;
+        }
+        std::mem::take(&mut *buf.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    type OutputReader = (
+        std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        tokio::task::JoinHandle<()>,
+    );
+
+    /// Copy a pipe into a shared buffer, so whatever arrived is kept even if
+    /// the reader has to be abandoned.
+    fn spawn_output_reader<R>(stream: R) -> OutputReader
     where
         R: AsyncRead + Unpin + Send + 'static,
     {
-        tokio::spawn(async move {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = buf.clone();
+        let task = tokio::spawn(async move {
             let mut reader = BufReader::new(stream);
-            let mut buf = Vec::new();
-            reader.read_to_end(&mut buf).await?;
-            Ok(buf)
-        })
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = reader.read(&mut chunk).await {
+                if n == 0 {
+                    break;
+                }
+                sink.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend_from_slice(&chunk[..n]);
+            }
+        });
+        (buf, task)
     }
 
     async fn take_stderr_output(stderr: &mut Option<tokio::task::JoinHandle<String>>) -> String {

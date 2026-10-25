@@ -306,3 +306,109 @@ async fn codex_gets_the_model_only_when_the_user_chose_it() {
     let default = codex_args(false).await;
     assert!(!default.iter().any(|a| a == "-m"), "{default:?}");
 }
+
+fn codex_request<'a>(
+    binary: &'a str,
+    prompt: &'a str,
+    timeout_secs: u64,
+) -> CliCompletionRequest<'a> {
+    CliCompletionRequest {
+        engine: CliEngine::Codex,
+        binary,
+        base_args: &[],
+        system_prompt: "SYSTEM",
+        user_prompt: prompt,
+        model: "gpt-5",
+        model_explicit: false,
+        reasoning_effort: None,
+        debug: false,
+        timeout: Duration::from_secs(timeout_secs),
+    }
+}
+
+const AGENT_OK: &str =
+    r#"printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'"#;
+
+#[tokio::test]
+async fn cli_that_writes_before_reading_a_large_prompt_does_not_deadlock() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("fake_codex_chatty");
+    write_executable_script(
+        &script,
+        &format!("#!/bin/sh\nhead -c 262144 /dev/zero >&2\ncat > /dev/null\n{AGENT_OK}\n"),
+    );
+    let prompt = "x".repeat(300_000);
+    let started = std::time::Instant::now();
+    let text =
+        run_cli_completion_with_retry(|| codex_request(script.to_str().unwrap(), &prompt, 10))
+            .await
+            .expect("no deadlock");
+    assert_eq!(text, "ok");
+    assert!(started.elapsed() < StdDuration::from_secs(8));
+}
+
+#[tokio::test]
+async fn cli_that_exits_without_reading_shows_its_own_error() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("fake_codex_logged_out");
+    write_executable_script(&script, "#!/bin/sh\necho 'Not logged in' >&2\nexit 1\n");
+    let prompt = "x".repeat(1_000_000);
+    let err =
+        run_cli_completion_with_retry(|| codex_request(script.to_str().unwrap(), &prompt, 10))
+            .await
+            .unwrap_err()
+            .to_string();
+    assert!(err.contains("Not logged in"), "{err}");
+    assert!(!err.contains("Broken pipe"), "{err}");
+}
+
+#[tokio::test]
+async fn cli_helper_holding_the_pipes_does_not_extend_the_wait() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("fake_codex_helper");
+    write_executable_script(
+        &script,
+        &format!("#!/bin/sh\ncat > /dev/null\n{AGENT_OK}\nsleep 30 &\nexit 0\n"),
+    );
+    let started = std::time::Instant::now();
+    let text = run_cli_completion_with_retry(|| codex_request(script.to_str().unwrap(), "hi", 20))
+        .await
+        .expect("returns after the grace period");
+    assert_eq!(text, "ok");
+    assert!(
+        started.elapsed() < StdDuration::from_secs(8),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn cli_timeout_kills_the_whole_process_group() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("fake_codex_slow");
+    let pid_file = dir.path().join("grandchild.pid");
+    write_executable_script(
+        &script,
+        &format!(
+            "#!/bin/sh\nsleep 47 &\necho $! > \"{}\"\nsleep 30\n",
+            pid_file.display()
+        ),
+    );
+    let started = std::time::Instant::now();
+    // 3 s leaves the script time to start even when tests run in parallel.
+    let err = run_cli_completion_with_retry(|| codex_request(script.to_str().unwrap(), "hi", 3))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("timed out"), "{err}");
+    assert!(started.elapsed() < StdDuration::from_secs(10));
+    let pid: i32 = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    sleep(Duration::from_millis(200)).await;
+    // SAFETY: signal 0 only checks whether the process exists.
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    assert!(!alive, "grandchild {pid} survived the timeout");
+}
