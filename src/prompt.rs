@@ -157,7 +157,7 @@ pub fn build_qq_user_message(
     out.push('\n');
 
     if !history.is_empty() {
-        out.push_str("[Recent terminal commands for context (sanitized for privacy):\n");
+        out.push_str("[Recent qq/qa commands from your shell history, for context:\n");
         for (i, line) in history.iter().enumerate() {
             out.push_str(&format!("{}. {}\n", i + 1, line));
         }

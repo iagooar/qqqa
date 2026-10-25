@@ -411,7 +411,7 @@ Some OpenAI-compatible gateways (LiteLLM, local corporate proxies, etc.) termina
 }
 ```
 
-- `ca_bundle_path` accepts a PEM or DER file. Relative paths are resolved against `~/.qq/` so you can keep certificates next to the config.
+- `ca_bundle_path` accepts a PEM or DER file. Relative paths are resolved against the config directory (`~/.qq/`, or `$XDG_CONFIG_HOME/qq/`) so you can keep certificates next to the config.
 - `ca_bundle_env` is optional; if set, qqqa reads that environment variable for the bundle path and falls back to `ca_bundle_path` when it is unset. This mirrors proxies that expose `SSL_CERTFILE_PATH` or similar knobs.
 - Multiple certificates can live in the same file (concatenate PEM entries). qqqa appends them to the existing Rustls trust store, so standard public CAs continue to work.
 
