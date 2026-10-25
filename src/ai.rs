@@ -218,7 +218,7 @@ impl ChatClient {
 
     /// The output cap for `model`: reasoning models use the reasoning cap first.
     pub fn max_tokens_for(&self, model: &str) -> u32 {
-        if Self::is_new_style_model(model) {
+        if Self::is_reasoning_model(model) {
             self.reasoning_max_tokens
                 .or(self.max_tokens)
                 .unwrap_or(DEFAULT_REASONING_MAX_TOKENS)
@@ -235,18 +235,27 @@ impl ChatClient {
         builder.bearer_auth(&self.api_key)
     }
 
-    fn is_new_style_model(model: &str) -> bool {
-        let lower = model.to_ascii_lowercase();
-        const PREFIXES: [&str; 3] = ["gpt-5", "o1", "o3"];
-        PREFIXES.iter().any(|prefix| lower.starts_with(prefix))
+    /// The model name without a `vendor/` prefix (`openai/gpt-5-mini` ->
+    /// `gpt-5-mini`), lowercased, so rules work through routers like OpenRouter.
+    fn base_model(model: &str) -> String {
+        model
+            .rsplit('/')
+            .next()
+            .unwrap_or(model)
+            .to_ascii_lowercase()
     }
 
-    fn is_gpt5_model(model: &str) -> bool {
-        model.to_ascii_lowercase().starts_with("gpt-5")
+    /// OpenAI reasoning models (GPT-5 family, o1/o3/o4…): they take
+    /// `max_completion_tokens`, reject a custom temperature, and count
+    /// reasoning tokens against the output cap.
+    fn is_reasoning_model(model: &str) -> bool {
+        let base = Self::base_model(model);
+        let o_series = base.starts_with('o') && base[1..].starts_with(|c: char| c.is_ascii_digit());
+        base.starts_with("gpt-5") || o_series
     }
 
     fn max_tokens_param(model: &str) -> &'static str {
-        if Self::is_new_style_model(model) {
+        if Self::is_reasoning_model(model) {
             "max_completion_tokens"
         } else {
             "max_tokens"
@@ -254,7 +263,7 @@ impl ChatClient {
     }
 
     fn temperature_directive(&self, model: &str) -> TemperatureDirective {
-        if Self::is_gpt5_model(model) {
+        if Self::is_reasoning_model(model) {
             if self.temperature_override.is_some() {
                 TemperatureDirective::Send(1.0)
             } else {
@@ -265,11 +274,12 @@ impl ChatClient {
         }
     }
 
+    /// `minimal` keeps GPT-5 answers fast. Later GPT-5.x models do not accept
+    /// it, so only the original three get it by default.
     fn default_reasoning_effort(model: &str) -> Option<&'static str> {
-        if Self::is_gpt5_model(model) {
-            Some("minimal")
-        } else {
-            None
+        match Self::base_model(model).as_str() {
+            "gpt-5" | "gpt-5-mini" | "gpt-5-nano" => Some("minimal"),
+            _ => None,
         }
     }
 
@@ -288,22 +298,20 @@ impl ChatClient {
                 }
             }
             if debug
-                && Self::is_gpt5_model(model)
+                && Self::is_reasoning_model(model)
                 && self.temperature_user_override
                 && self.temperature_override.is_some()
             {
                 eprintln!(
-                    "[warn] Overriding requested temperature to 1.0 for GPT-5 model '{}'.",
+                    "[warn] Overriding requested temperature to 1.0 for reasoning model '{}'.",
                     model
                 );
             }
-            let reasoning = if Self::default_reasoning_effort(model).is_some() {
-                self.reasoning_effort
-                    .as_deref()
-                    .or_else(|| Self::default_reasoning_effort(model))
-            } else {
-                None
-            };
+            // A configured effort is always sent; the default only to models that accept it.
+            let reasoning = self
+                .reasoning_effort
+                .as_deref()
+                .or_else(|| Self::default_reasoning_effort(model));
             if let Some(effort) = reasoning {
                 obj.insert("reasoning_effort".into(), json!(effort));
             } else {
@@ -731,6 +739,9 @@ mod cli_backend {
         pub system_prompt: &'a str,
         pub user_prompt: &'a str,
         pub model: &'a str,
+        /// The user chose `model` (`-m` or `model_override`). Codex gets `-m`
+        /// only then; its profile model is a display label.
+        pub model_explicit: bool,
         pub reasoning_effort: Option<&'a str>,
         pub debug: bool,
         pub timeout: Duration,
@@ -775,6 +786,10 @@ mod cli_backend {
             cmd.arg("--skip-git-repo-check");
         }
         cmd.arg("--json");
+        if req.model_explicit && !req.model.trim().is_empty() {
+            cmd.arg("-m");
+            cmd.arg(req.model);
+        }
         let reasoning = req.reasoning_effort.unwrap_or("low");
         cmd.arg("-c");
         cmd.arg(format!("model_reasoning_effort={}", reasoning));
@@ -787,60 +802,7 @@ mod cli_backend {
             tagged_system_prompt(req.system_prompt),
             tagged_user_prompt(req.user_prompt)
         );
-
-        if req.debug {
-            eprintln!(
-                "[debug] Running CLI provider '{}' with args: {:?}",
-                req.binary, cmd
-            );
-        }
-
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "Failed to spawn CLI provider '{}'. Is it installed and on your PATH?",
-                    req.binary
-                )
-            })?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .await
-                .context("Writing prompt to CLI provider stdin")?;
-        }
-
-        let output = wait_child_output_with_timeout(child, req.timeout, req.binary).await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(anyhow!(
-                "CLI provider '{}' exited with status {}.{}{}",
-                req.binary,
-                output
-                    .status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".to_string()),
-                if stdout.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!("\nstdout: {}", stdout.trim())
-                },
-                if stderr.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!("\nstderr: {}", stderr.trim())
-                }
-            ));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = run_buffered(cmd, Some(prompt), &req).await?;
         parse_codex_response(&stdout)
     }
 
@@ -864,111 +826,13 @@ mod cli_backend {
             tagged_system_prompt(req.system_prompt),
             tagged_user_prompt(req.user_prompt)
         );
-
-        if req.debug {
-            eprintln!(
-                "[debug] Running CLI provider '{}' with args: {:?}",
-                req.binary, cmd
-            );
-        }
-
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "Failed to spawn CLI provider '{}'. Is it installed and on your PATH?",
-                    req.binary
-                )
-            })?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .await
-                .context("Writing prompt to CLI provider stdin")?;
-        }
-
-        let output = wait_child_output_with_timeout(child, req.timeout, req.binary).await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(anyhow!(
-                "CLI provider '{}' exited with status {}.{}{}",
-                req.binary,
-                output
-                    .status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".to_string()),
-                if stdout.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!("\nstdout: {}", stdout.trim())
-                },
-                if stderr.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!("\nstderr: {}", stderr.trim())
-                }
-            ));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = run_buffered(cmd, Some(prompt), &req).await?;
         parse_gemini_response(&stdout)
     }
 
     async fn run_claude(req: CliCompletionRequest<'_>) -> Result<String> {
-        let mut cmd = build_claude_command(&req, false);
-
-        if req.debug {
-            eprintln!(
-                "[debug] Running CLI provider '{}' with args: {:?}",
-                req.binary, cmd
-            );
-        }
-
-        let child = cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "Failed to spawn CLI provider '{}'. Is it installed and on your PATH?",
-                    req.binary
-                )
-            })?;
-
-        let output = wait_child_output_with_timeout(child, req.timeout, req.binary).await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            return Err(anyhow!(
-                "CLI provider '{}' exited with status {}.{}{}",
-                req.binary,
-                output
-                    .status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".to_string()),
-                if stdout.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!("\nstdout: {}", stdout.trim())
-                },
-                if stderr.trim().is_empty() {
-                    "".to_string()
-                } else {
-                    format!("\nstderr: {}", stderr.trim())
-                }
-            ));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let cmd = build_claude_command(&req, false);
+        let stdout = run_buffered(cmd, Some(tagged_user_prompt(req.user_prompt)), &req).await?;
         parse_claude_response(&stdout)
     }
 
@@ -988,16 +852,23 @@ mod cli_backend {
             );
         }
 
+        configure_child(&mut cmd);
         let mut child = cmd
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| {
-                format!(
-                    "Failed to spawn CLI provider '{}'. Is it installed and on your PATH?",
-                    req.binary
-                )
-            })?;
+            .map_err(|e| spawn_error(req.binary, e))?;
+        let pid = child.id();
+        let _interrupt_guard = crate::interrupt::track_group(pid);
+        // Written from a task so a large prompt cannot block reading the stream.
+        let prompt = tagged_user_prompt(req.user_prompt);
+        let writer = child.stdin.take().map(|mut pipe| {
+            tokio::spawn(async move {
+                let _ = pipe.write_all(prompt.as_bytes()).await;
+                let _ = pipe.shutdown().await;
+            })
+        });
 
         let stdout = child
             .stdout
@@ -1022,8 +893,7 @@ mod cli_backend {
             let next = tokio::select! {
                 line = reader.next_line() => line?,
                 _ = &mut deadline => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
+                    kill_tree(&mut child, pid).await;
                     let _ = take_stderr_output(&mut stderr).await;
                     return Err(timeout_error(req.binary, req.timeout));
                 }
@@ -1066,13 +936,15 @@ mod cli_backend {
         let status = tokio::select! {
             status = child.wait() => status?,
             _ = &mut deadline => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
+                kill_tree(&mut child, pid).await;
                 let _ = take_stderr_output(&mut stderr).await;
                 return Err(timeout_error(req.binary, req.timeout));
             }
         };
         let stderr = take_stderr_output(&mut stderr).await;
+        if let Some(writer) = writer {
+            writer.abort();
+        }
 
         if !status.success() {
             return Err(anyhow!(
@@ -1121,49 +993,147 @@ mod cli_backend {
         }
         cmd.arg("--append-system-prompt");
         cmd.arg(tagged_system_prompt(req.system_prompt));
-        cmd.arg("--disallowed-tools");
-        cmd.arg("Bash(*) Edit");
-        cmd.arg("--");
-        cmd.arg(tagged_user_prompt(req.user_prompt));
+        // qq and qa only need text back. No built-in tools and no MCP servers
+        // keeps each request small (the tool definitions alone are ~74 KB).
+        cmd.arg("--tools=");
+        cmd.arg("--strict-mcp-config");
+        // The user prompt (with any piped input) goes on stdin, not argv: argv
+        // is capped (128 KiB per argument on Linux) and visible in `ps`.
         cmd
     }
 
-    async fn wait_child_output_with_timeout(
-        mut child: tokio::process::Child,
+    /// How long output readers may keep going after the CLI exits. A helper
+    /// process the CLI left behind can hold the pipes open; it is killed then.
+    const READ_GRACE: Duration = Duration::from_secs(2);
+
+    /// Run a CLI provider: feed `stdin`, collect stdout and stderr, all bounded
+    /// by `req.timeout` (plus [`READ_GRACE`]). Returns stdout, or an error with
+    /// the exit status, stdout and stderr.
+    async fn run_buffered(
+        mut cmd: Command,
+        stdin: Option<String>,
+        req: &CliCompletionRequest<'_>,
+    ) -> Result<String> {
+        if req.debug {
+            eprintln!(
+                "[debug] Running CLI provider '{}' with args: {:?}",
+                req.binary, cmd
+            );
+        }
+        configure_child(&mut cmd);
+        let mut child = cmd
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| spawn_error(req.binary, e))?;
+        let _interrupt_guard = crate::interrupt::track_group(child.id());
+        let output = wait_with_timeout(&mut child, stdin, req.timeout, req.binary).await?;
+        if !output.status.success() {
+            return Err(exit_error(req.binary, &output));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Kill the child with everything it started when qq gives up on it, and
+    /// let it outlive nothing: its own process group (Unix), killed on drop.
+    fn configure_child(cmd: &mut Command) {
+        cmd.kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
+    }
+
+    /// Kill the child's process group, then the child. `pid` is taken at
+    /// spawn time, because tokio forgets it once the child has been reaped.
+    async fn kill_tree(child: &mut tokio::process::Child, pid: Option<u32>) {
+        #[cfg(not(unix))]
+        let _ = pid;
+        #[cfg(unix)]
+        if let Some(pid) = pid {
+            // SAFETY: plain kill(2) on the child's process group (its pgid is its pid).
+            unsafe {
+                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+            }
+        }
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+
+    /// Keeps the OS error as the source, so callers can still inspect it.
+    fn spawn_error(binary: &str, err: std::io::Error) -> anyhow::Error {
+        let message = if err.kind() == std::io::ErrorKind::NotFound {
+            format!(
+                "Failed to spawn CLI provider '{}'. Is it installed and on your PATH?",
+                binary
+            )
+        } else {
+            format!("Failed to start CLI provider '{}': {}", binary, err)
+        };
+        anyhow::Error::new(err).context(message)
+    }
+
+    fn exit_error(binary: &str, output: &std::process::Output) -> anyhow::Error {
+        let section = |name: &str, bytes: &[u8]| {
+            let text = String::from_utf8_lossy(bytes);
+            if text.trim().is_empty() {
+                String::new()
+            } else {
+                format!("\n{}: {}", name, text.trim())
+            }
+        };
+        anyhow!(
+            "CLI provider '{}' exited with status {}.{}{}",
+            binary,
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string()),
+            section("stdout", &output.stdout),
+            section("stderr", &output.stderr)
+        )
+    }
+
+    async fn wait_with_timeout(
+        child: &mut tokio::process::Child,
+        stdin: Option<String>,
         timeout: Duration,
         binary: &str,
     ) -> Result<std::process::Output> {
-        const POLL_INTERVAL_MS: u64 = 25;
+        // Readers start before the prompt is written, so a child that writes a
+        // lot before reading stdin cannot deadlock against us.
+        let pid = child.id();
+        let stdout = child.stdout.take().map(spawn_output_reader);
+        let stderr = child.stderr.take().map(spawn_output_reader);
+        let writer = match (stdin, child.stdin.take()) {
+            (Some(text), Some(mut pipe)) => Some(tokio::spawn(async move {
+                // A child that exits without reading gives EPIPE here; its exit
+                // status and stderr are the real answer, so the error is dropped.
+                let _ = pipe.write_all(text.as_bytes()).await;
+                let _ = pipe.shutdown().await;
+            })),
+            _ => None,
+        };
 
-        let stdout_task = child.stdout.take().map(spawn_output_reader);
-        let stderr_task = child.stderr.take().map(spawn_output_reader);
-
-        let deadline = tokio::time::sleep(timeout);
-        tokio::pin!(deadline);
-
-        let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
+        // Ctrl-C is handled process-wide (crate::interrupt), which kills this
+        // group too; see `track_group` in run_buffered.
+        let status = match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(status) => status?,
+            Err(_) => {
+                kill_tree(child, pid).await;
+                return Err(timeout_error(binary, timeout));
             }
-            tokio::select! {
-                _ = &mut deadline => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                    return Err(timeout_error(binary, timeout));
-                }
-                _ = tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)) => {}
-            }
         };
+        if let Some(writer) = writer {
+            writer.abort();
+        }
 
-        let stdout = match stdout_task {
-            Some(handle) => handle.await??,
-            None => Vec::new(),
-        };
-        let stderr = match stderr_task {
-            Some(handle) => handle.await??,
-            None => Vec::new(),
-        };
-
+        let stdout = collect_output(child, pid, stdout).await;
+        let stderr = collect_output(child, pid, stderr).await;
         Ok(std::process::Output {
             status,
             stdout,
@@ -1171,16 +1141,48 @@ mod cli_backend {
         })
     }
 
-    fn spawn_output_reader<R>(stream: R) -> tokio::task::JoinHandle<Result<Vec<u8>>>
+    /// Wait up to [`READ_GRACE`] for a reader to reach end of file; if a
+    /// leftover helper still holds the pipe, kill the process group.
+    async fn collect_output(
+        child: &mut tokio::process::Child,
+        pid: Option<u32>,
+        reader: Option<OutputReader>,
+    ) -> Vec<u8> {
+        let Some((buf, task)) = reader else {
+            return Vec::new();
+        };
+        if tokio::time::timeout(READ_GRACE, task).await.is_err() {
+            kill_tree(child, pid).await;
+        }
+        std::mem::take(&mut *buf.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    type OutputReader = (
+        std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        tokio::task::JoinHandle<()>,
+    );
+
+    /// Copy a pipe into a shared buffer, so whatever arrived is kept even if
+    /// the reader has to be abandoned.
+    fn spawn_output_reader<R>(stream: R) -> OutputReader
     where
         R: AsyncRead + Unpin + Send + 'static,
     {
-        tokio::spawn(async move {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = buf.clone();
+        let task = tokio::spawn(async move {
             let mut reader = BufReader::new(stream);
-            let mut buf = Vec::new();
-            reader.read_to_end(&mut buf).await?;
-            Ok(buf)
-        })
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = reader.read(&mut chunk).await {
+                if n == 0 {
+                    break;
+                }
+                sink.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend_from_slice(&chunk[..n]);
+            }
+        });
+        (buf, task)
     }
 
     async fn take_stderr_output(stderr: &mut Option<tokio::task::JoinHandle<String>>) -> String {
@@ -1444,6 +1446,79 @@ mod tests {
     use rcgen::{CertifiedKey, generate_simple_self_signed};
     use std::fs;
     use tempfile::tempdir;
+
+    fn params(model: &str, client: super::ChatClient) -> serde_json::Value {
+        let mut body = serde_json::json!({"model": model, "messages": []});
+        client.apply_model_defaults(&mut body, model, false);
+        body.as_object_mut().unwrap().remove("messages");
+        body.as_object_mut().unwrap().remove("model");
+        body
+    }
+
+    fn client() -> super::ChatClient {
+        super::ChatClient::new(
+            "http://x".into(),
+            "k".into(),
+            std::collections::HashMap::new(),
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn model_parameters_follow_the_model_family() {
+        use serde_json::json;
+        let cases = [
+            (
+                "gpt-4.1-mini",
+                json!({"max_tokens": 4096, "temperature": 0.15f32}),
+            ),
+            (
+                "openai/gpt-4.1-nano",
+                json!({"max_tokens": 4096, "temperature": 0.15f32}),
+            ),
+            (
+                "gpt-5-mini",
+                json!({"max_completion_tokens": 16384, "reasoning_effort": "minimal"}),
+            ),
+            (
+                "openai/gpt-5-mini",
+                json!({"max_completion_tokens": 16384, "reasoning_effort": "minimal"}),
+            ),
+            ("gpt-5.1", json!({"max_completion_tokens": 16384})),
+            ("o1-preview", json!({"max_completion_tokens": 16384})),
+            ("o3-mini", json!({"max_completion_tokens": 16384})),
+            ("o4-mini", json!({"max_completion_tokens": 16384})),
+            ("openai/o4-mini", json!({"max_completion_tokens": 16384})),
+            (
+                "ollama-model",
+                json!({"max_tokens": 4096, "temperature": 0.15f32}),
+            ),
+        ];
+        for (model, want) in cases {
+            assert_eq!(params(model, client()), want, "{model}");
+        }
+    }
+
+    #[test]
+    fn configured_reasoning_effort_is_always_sent() {
+        let c = client().with_reasoning_effort(Some("high".into()));
+        assert_eq!(params("openai/gpt-oss-120b", c)["reasoning_effort"], "high");
+        let c = client().with_reasoning_effort(Some("low".into()));
+        assert_eq!(params("o3-mini", c)["reasoning_effort"], "low");
+    }
+
+    #[test]
+    fn reasoning_models_get_temperature_one_only_when_asked() {
+        let c = client().with_temperature(Some(0.4), true);
+        assert_eq!(params("o4-mini", c)["temperature"], 1.0);
+        let c = client().with_temperature(Some(0.4), true);
+        assert_eq!(
+            params("gpt-4.1", c)["temperature"],
+            serde_json::json!(0.4f32)
+        );
+    }
 
     #[test]
     fn format_api_error_adds_openrouter_hint_for_402() {

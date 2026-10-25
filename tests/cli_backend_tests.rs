@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
 use anyhow::Result;
-use qqqa::ai::{CliCompletionRequest, run_cli_completion};
+use qqqa::ai::{CliCompletionRequest, run_cli_completion, run_cli_completion_streaming};
 use qqqa::config::CliEngine;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -90,6 +90,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"h
         system_prompt: "SYSTEM",
         user_prompt: "USER",
         model: "gpt-5",
+        model_explicit: false,
         reasoning_effort: Some("minimal"),
         debug: true,
         timeout: Duration::from_secs(5),
@@ -127,6 +128,7 @@ printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":
         system_prompt: "SYSTEM",
         user_prompt: "USER",
         model: "gpt-5",
+        model_explicit: false,
         reasoning_effort: Some("low"),
         debug: false,
         timeout: Duration::from_secs(5),
@@ -183,6 +185,7 @@ printf '%s\n' '{{"session_id":"test","response":"gemini ok"}}'
         system_prompt: "SYSTEM",
         user_prompt: "USER",
         model: "gemini-3-flash-preview",
+        model_explicit: false,
         reasoning_effort: None,
         debug: false,
         timeout: Duration::from_secs(5),
@@ -218,13 +221,16 @@ async fn run_cli_completion_invokes_claude_with_expected_args() {
     let dir = tempdir().unwrap();
     let script_path = dir.path().join("fake_claude");
     let args_dump = dir.path().join("claude_args.txt");
+    let prompt_dump = dir.path().join("claude_prompt.txt");
     let script = format!(
         r#"#!/bin/sh
 set -eu
 printf '%s\0' "$@" > "{args}"
+cat > "{prompt}"
 printf '%s' '{{"type":"result","subtype":"success","result":"<cmd>echo hi</cmd>"}}'
 "#,
-        args = args_dump.display()
+        args = args_dump.display(),
+        prompt = prompt_dump.display()
     );
     write_executable_script(&script_path, &script);
 
@@ -235,6 +241,7 @@ printf '%s' '{{"type":"result","subtype":"success","result":"<cmd>echo hi</cmd>"
         system_prompt: "SYSTEM",
         user_prompt: "USER",
         model: "claude-haiku-4-5",
+        model_explicit: false,
         reasoning_effort: None,
         debug: false,
         timeout: Duration::from_secs(5),
@@ -253,13 +260,219 @@ printf '%s' '{{"type":"result","subtype":"success","result":"<cmd>echo hi</cmd>"
         "claude-haiku-4-5",
         "--append-system-prompt",
         "<system-prompt>\nSYSTEM\n</system-prompt>",
-        "--disallowed-tools",
-        "Bash(*) Edit",
-        "--",
-        "<user-prompt>\nUSER\n</user-prompt>",
+        "--tools=",
+        "--strict-mcp-config",
     ]
     .into_iter()
     .map(String::from)
     .collect();
     assert_eq!(args, expected);
+    assert_eq!(
+        fs::read_to_string(&prompt_dump).unwrap(),
+        "<user-prompt>\nUSER\n</user-prompt>"
+    );
+}
+
+async fn codex_args(model_explicit: bool) -> Vec<String> {
+    let dir = tempdir().unwrap();
+    let script_path = dir.path().join("fake_codex_args");
+    let args_dump = dir.path().join("codex_args.txt");
+    let script = format!(
+        r#"#!/bin/sh
+printf '%s\0' "$@" > "{args}"
+cat > /dev/null
+printf '%s\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"ok"}}}}'
+"#,
+        args = args_dump.display()
+    );
+    write_executable_script(&script_path, &script);
+    run_cli_completion_with_retry(|| CliCompletionRequest {
+        engine: CliEngine::Codex,
+        binary: script_path.to_str().unwrap(),
+        base_args: &[],
+        system_prompt: "SYSTEM",
+        user_prompt: "USER",
+        model: "o3",
+        model_explicit,
+        reasoning_effort: None,
+        debug: false,
+        timeout: Duration::from_secs(5),
+    })
+    .await
+    .expect("cli run succeeds");
+    read_args(&args_dump)
+}
+
+#[tokio::test]
+async fn codex_gets_the_model_only_when_the_user_chose_it() {
+    let chosen = codex_args(true).await;
+    let pos = chosen.iter().position(|a| a == "-m").expect("-m passed");
+    assert_eq!(chosen[pos + 1], "o3");
+    let default = codex_args(false).await;
+    assert!(!default.iter().any(|a| a == "-m"), "{default:?}");
+}
+
+fn codex_request<'a>(
+    binary: &'a str,
+    prompt: &'a str,
+    timeout_secs: u64,
+) -> CliCompletionRequest<'a> {
+    CliCompletionRequest {
+        engine: CliEngine::Codex,
+        binary,
+        base_args: &[],
+        system_prompt: "SYSTEM",
+        user_prompt: prompt,
+        model: "gpt-5",
+        model_explicit: false,
+        reasoning_effort: None,
+        debug: false,
+        timeout: Duration::from_secs(timeout_secs),
+    }
+}
+
+const AGENT_OK: &str =
+    r#"printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'"#;
+
+#[tokio::test]
+async fn cli_that_writes_before_reading_a_large_prompt_does_not_deadlock() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("fake_codex_chatty");
+    write_executable_script(
+        &script,
+        &format!("#!/bin/sh\nhead -c 262144 /dev/zero >&2\ncat > /dev/null\n{AGENT_OK}\n"),
+    );
+    let prompt = "x".repeat(300_000);
+    let started = std::time::Instant::now();
+    let text =
+        run_cli_completion_with_retry(|| codex_request(script.to_str().unwrap(), &prompt, 10))
+            .await
+            .expect("no deadlock");
+    assert_eq!(text, "ok");
+    assert!(started.elapsed() < StdDuration::from_secs(8));
+}
+
+#[tokio::test]
+async fn cli_that_exits_without_reading_shows_its_own_error() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("fake_codex_logged_out");
+    write_executable_script(&script, "#!/bin/sh\necho 'Not logged in' >&2\nexit 1\n");
+    let prompt = "x".repeat(1_000_000);
+    let err =
+        run_cli_completion_with_retry(|| codex_request(script.to_str().unwrap(), &prompt, 10))
+            .await
+            .unwrap_err()
+            .to_string();
+    assert!(err.contains("Not logged in"), "{err}");
+    assert!(!err.contains("Broken pipe"), "{err}");
+}
+
+#[tokio::test]
+async fn cli_helper_holding_the_pipes_does_not_extend_the_wait() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("fake_codex_helper");
+    write_executable_script(
+        &script,
+        &format!("#!/bin/sh\ncat > /dev/null\n{AGENT_OK}\nsleep 30 &\nexit 0\n"),
+    );
+    let started = std::time::Instant::now();
+    let text = run_cli_completion_with_retry(|| codex_request(script.to_str().unwrap(), "hi", 20))
+        .await
+        .expect("returns after the grace period");
+    assert_eq!(text, "ok");
+    assert!(
+        started.elapsed() < StdDuration::from_secs(8),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn cli_timeout_kills_the_whole_process_group() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("fake_codex_slow");
+    let pid_file = dir.path().join("grandchild.pid");
+    write_executable_script(
+        &script,
+        &format!(
+            "#!/bin/sh\nsleep 47 &\necho $! > \"{}\"\nsleep 30\n",
+            pid_file.display()
+        ),
+    );
+    let started = std::time::Instant::now();
+    // 3 s leaves the script time to start even when tests run in parallel.
+    let err = run_cli_completion_with_retry(|| codex_request(script.to_str().unwrap(), "hi", 3))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("timed out"), "{err}");
+    assert!(started.elapsed() < StdDuration::from_secs(10));
+    let pid: i32 = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    sleep(Duration::from_millis(200)).await;
+    // SAFETY: signal 0 only checks whether the process exists.
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    assert!(!alive, "grandchild {pid} survived the timeout");
+}
+
+fn claude_request<'a>(binary: &'a str, prompt: &'a str) -> CliCompletionRequest<'a> {
+    CliCompletionRequest {
+        engine: CliEngine::Claude,
+        binary,
+        base_args: &[],
+        system_prompt: "SYSTEM",
+        user_prompt: prompt,
+        model: "claude-haiku-4-5",
+        model_explicit: false,
+        reasoning_effort: None,
+        debug: false,
+        timeout: Duration::from_secs(10),
+    }
+}
+
+#[tokio::test]
+async fn claude_takes_a_large_prompt_on_stdin() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("fake_claude_big");
+    write_executable_script(
+        &script,
+        "#!/bin/sh\nbytes=$(wc -c)\nprintf '{\"type\":\"result\",\"result\":\"%s\"}' \"$bytes\"\n",
+    );
+    // Far above the 128 KiB per-argument limit on Linux and ARG_MAX on macOS.
+    let prompt = "x".repeat(1_500_000);
+    let text = run_cli_completion_with_retry(|| claude_request(script.to_str().unwrap(), &prompt))
+        .await
+        .expect("large prompt works");
+    let bytes: usize = text.trim().parse().unwrap();
+    assert!(bytes > 1_500_000, "{bytes}");
+}
+
+#[tokio::test]
+async fn claude_streaming_reads_the_prompt_from_stdin() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("fake_claude_stream");
+    let prompt_dump = dir.path().join("stream_prompt.txt");
+    write_executable_script(
+        &script,
+        &format!(
+            "#!/bin/sh\ncat > \"{}\"\nprintf '%s\\n' '{{\"type\":\"stream_event\",\"event\":{{\"type\":\"content_block_delta\",\"delta\":{{\"text\":\"streamed\"}}}}}}'\n",
+            prompt_dump.display()
+        ),
+    );
+    let mut seen = String::new();
+    let text =
+        run_cli_completion_streaming(claude_request(script.to_str().unwrap(), "USER"), |t| {
+            seen.push_str(t)
+        })
+        .await
+        .expect("stream works");
+    assert_eq!(text, "streamed");
+    assert_eq!(seen, "streamed");
+    assert_eq!(
+        fs::read_to_string(&prompt_dump).unwrap(),
+        "<user-prompt>\nUSER\n</user-prompt>"
+    );
 }

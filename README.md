@@ -80,6 +80,7 @@ What to know:
 
 - Install Claude Code so the `claude` binary is on your `PATH`, then run `claude login` once.
 - Claude Code streams responses the same way API-based LLMs do.
+- qqqa runs `claude -p` with no built-in tools and no MCP servers (`--tools= --strict-mcp-config`), so it only produces text and each request stays small. The prompt goes on stdin, so large piped input works. This needs a Claude Code release that supports `--tools`.
 - Need to pin a different Claude desktop model? Add `"model_override": "claude-haiku-4-5"` under `model_providers.claude_cli.cli` in `~/.qq/config.json`. That override only applies to the Claude CLI; `qq -m/--model` still takes precedence per run.
 
 Minimal config snippet:
@@ -197,11 +198,11 @@ Built-in defaults (override any of them in `~/.qq/config.json`):
   - `anthropic` → model `claude-3-5-sonnet-20241022` (inactive placeholder until Anthropic integration lands)
   - `gemini` → model `gemini-3-flash-preview`
   - `gemini_cli` → model `gemini-3-flash-preview` (passed to `gemini -m`)
-  - `codex` → model label `gpt-5` (only used for display; Codex CLI picks the backing ChatGPT model)
+  - `codex` → model label `gpt-5` (only used for display; Codex CLI picks the backing ChatGPT model unless you pass `-m` or set `model_override`, which qqqa forwards as `codex exec -m`)
 - Optional per-profile or global `prompt_suffix` text appended to the built-in system prompt (does not replace it). Useful for rules like "assume tools are installed" or "be less chatty".
 - Optional per-profile or global `system_prompt` (text) or `system_prompt_file` (path; relative paths resolve against the config directory) that replaces qq's built-in system prompt, for example to use qq for general questions or to define prompt "modes" as profiles. A profile's setting wins over the global one; set only one of the two per level. `prompt_suffix` and `--no-fun` still apply on top. qa keeps its own system prompt, because it defines the tool-call protocol. Note that qq's formatting tags (`<cmd>`, `<info>`, …) only appear if your prompt asks for them.
-- Optional per-profile `reasoning_effort` for GPT-5 family models. If you leave it unset, qqqa sends `"reasoning_effort": "minimal"` for any `gpt-5*` model to keep responses fast. Set it to `"low"`, `"medium"`, or `"high"` when you want deeper reasoning.
-- (discouraged) Optional per-profile `temperature`. Most models default to `0.15` unless you set it in `~/.qq/config.json` or pass `--temperature <value>` for a single run. GPT-5 models ignore custom temperatures; qqqa forces them to `1.0`.
+- Optional per-profile `reasoning_effort`. When set, qqqa sends it with every request (OpenAI reasoning models, `gpt-oss`, and other providers that accept it). When unset, qqqa sends `"reasoning_effort": "minimal"` only for `gpt-5`, `gpt-5-mini` and `gpt-5-nano` (also as `openai/gpt-5-mini` and similar) to keep responses fast; later GPT-5.x models do not accept `minimal`. Set it to `"low"`, `"medium"`, or `"high"` when you want deeper reasoning.
+- (discouraged) Optional per-profile `temperature`. Most models default to `0.15` unless you set it in `~/.qq/config.json` or pass `--temperature <value>` for a single run. Reasoning models (GPT-5 family, o1/o3/o4) reject custom temperatures: qqqa omits the temperature for them, or sends `1.0` when you pass `--temperature`.
 - Optional per-profile `max_tokens` (output cap for ordinary models, default `4096`) and `reasoning_max_tokens` (output cap for reasoning models such as `gpt-5*`, `o1`, `o3`, whose reasoning tokens count against it; it falls back to `max_tokens`, then to `16384`). When an answer stops at the cap, qq and qa print what arrived and exit with an error that names the limit, so scripts never take a cut-off answer as complete.
 - (discouraged): you can change the timeout, e.g. `"timeout": "240"` under a model profile in `~/.qq/config.json` to raise the per-request limit (`qq` + `qa` default to 180 s - this is SLOW; faster models are a better fix).
 

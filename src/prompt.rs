@@ -1,5 +1,4 @@
 use chrono::Utc;
-use os_info::Type as OsType;
 
 /// Normalized inputs for building prompts.
 pub struct PromptInputs {
@@ -43,16 +42,14 @@ pub fn coalesce_prompt_inputs(args_question: String, stdin_block: Option<String>
 /// - Optional input from pipe
 /// - Trailing line: `Question: <text>`
 pub fn build_qq_prompt(
-    os: Option<OsType>,
+    os: Option<&str>,
     shell_hint: Option<&str>,
     history: &[String],
     stdin_block: Option<&str>,
     question: &str,
 ) -> String {
     let now = Utc::now();
-    let os_name = os
-        .map(|t| t.to_string())
-        .unwrap_or_else(|| os_info::get().os_type().to_string());
+    let os_name = os.map(str::to_string).unwrap_or_else(crate::shell::os_name);
 
     let mut out = String::new();
     out.push_str(&format!(
@@ -139,16 +136,14 @@ pub fn build_qq_system_prompt() -> String {
 
 /// User prompt for `qq` per the documented template (timestamp/OS/history/stdin/question).
 pub fn build_qq_user_message(
-    os: Option<OsType>,
+    os: Option<&str>,
     shell_hint: Option<&str>,
     history: &[String],
     stdin_block: Option<&str>,
     question: &str,
 ) -> String {
     let now = Utc::now();
-    let os_name = os
-        .map(|t| t.to_string())
-        .unwrap_or_else(|| os_info::get().os_type().to_string());
+    let os_name = os.map(str::to_string).unwrap_or_else(crate::shell::os_name);
 
     let mut out = String::new();
     out.push_str(&format!(
@@ -212,7 +207,7 @@ pub fn build_qa_system_prompt() -> String {
 
 /// Build the user message for `qa`: includes timestamp, OS, optional history and stdin context, plus the task.
 pub fn build_qa_user_message(
-    os: Option<OsType>,
+    os: Option<&str>,
     shell_hint: Option<&str>,
     history: &[String],
     stdin_block: Option<&str>,

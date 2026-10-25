@@ -4,6 +4,7 @@ pub mod config;
 pub mod formatting;
 pub mod history;
 pub mod input;
+pub mod interrupt;
 pub mod perms;
 pub mod prompt;
 pub mod shell;

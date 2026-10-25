@@ -69,6 +69,7 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    qqqa::interrupt::install();
 
     if cli.init {
         match Config::init_interactive(cli.debug) {
@@ -173,9 +174,8 @@ async fn main() -> Result<()> {
     } else {
         Vec::new()
     };
-    let os_details = os_info::get();
-    let os_type = os_details.os_type();
-    let shell_kind = detect_shell(os_type);
+    let os_name = qqqa::shell::os_name();
+    let shell_kind = detect_shell();
     if cli.debug {
         eprintln!("[debug] Inferred shell: {}", shell_kind.display_name(),);
     }
@@ -190,7 +190,7 @@ async fn main() -> Result<()> {
     }
     let shell_hint = shell_hint_for_prompt(shell_kind);
     let user_msg = build_qa_user_message(
-        Some(os_type),
+        Some(&os_name),
         Some(shell_hint),
         &history,
         stdin_block.as_deref(),
@@ -300,6 +300,7 @@ async fn main() -> Result<()> {
                 system_prompt: &system_prompt,
                 user_prompt: &user_msg,
                 model: &eff.model,
+                model_explicit: cli_conn.model_explicit,
                 reasoning_effort: eff.reasoning_effort.as_deref(),
                 debug: cli.debug,
                 timeout,
