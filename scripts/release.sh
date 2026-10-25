@@ -113,6 +113,9 @@ else
   fi
 fi
 
+# Keep Cargo.lock's own version in step, or `cargo build --locked` refuses to build.
+cargo update -p qqqa --offline --quiet
+
 echo "==> Building targets: ${targets[*]}"
 
 # Per-version directory for artifacts and manifest
@@ -298,13 +301,14 @@ if [[ $missing_required -ne 0 ]]; then
   exit 1
 fi
 
-# Pack source tarball for Homebrew / manual uploads
-src_stage=$(mktemp -d)
+# Pack source tarball for Homebrew / manual uploads. git archive packs only
+# tracked files, so untracked local folders (notes, venvs, the Homebrew tap
+# checkout) never end up in a published tarball. `git stash create` adds the
+# uncommitted version bump without touching the working tree.
 src_dir="qqqa-${ver}"
-rsync -a --exclude='.git' --exclude='target' --exclude='.DS_Store' ./ "${src_stage}/${src_dir}/"
 src_tarball="${artifact_root}/qqqa-v${ver}-src.tar.gz"
-tar -C "$src_stage" -czf "$src_tarball" "$src_dir"
-rm -rf "$src_stage"
+src_tree=$(git stash create)
+git archive --format=tar.gz --prefix="${src_dir}/" -o "$src_tarball" "${src_tree:-HEAD}"
 src_sha=$(shasum -a 256 "$src_tarball" | awk '{print $1}')
 
 # Checksums and manifest
@@ -359,8 +363,8 @@ echo
 echo "==> Next steps"
 cat <<EOF
   1. Review README/docs for accuracy (update manually if needed).
-  2. Commit the version bump (artifacts stay under target/ and remain ignored):
-       git add Cargo.toml
+  2. Commit the version bump and the changelog (artifacts stay under target/ and remain ignored):
+       git add Cargo.toml Cargo.lock CHANGELOG.md
        git commit -m 'release: v${ver}'
   3. Tag the release:
 EOF
