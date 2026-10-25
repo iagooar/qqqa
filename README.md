@@ -42,7 +42,7 @@ The tools may include transient context you choose to provide:
 
 ## Why I recommend using OpenRouter by default
 
-OpenRouter mirrors the OpenAI Chat Completions API, adds generous community-hosted models, and keeps `openai/gpt-4.1-nano` fast and inexpensive. qqqa talks to `https://openrouter.ai/api/v1` out of the box and reads the API key from `OPENROUTER_API_KEY`, so your first run works as soon as you drop in a key.
+OpenRouter mirrors the OpenAI Chat Completions API and gives one key access to most models. The default profile runs `qwen/qwen3.8-27b` routed to Cerebras, which answers a typical qq question in well under a second for a fraction of a cent. The `luna` (`openai/gpt-6-luna`) and `haiku` (`anthropic/claude-haiku-5.5`) profiles are cheap alternatives: `qq -p haiku "..."`. qqqa talks to `https://openrouter.ai/api/v1` out of the box and reads the API key from `OPENROUTER_API_KEY`, so your first run works as soon as you drop in a key.
 
 If you need even more throughput, the bundled `groq` profile that targets `openai/gpt-oss-20b` and `openai/gpt-oss-120b` remains available, and you can still add any OpenAI-compatible provider by editing `~/.qq/config.json` or creating a new profile.
 
@@ -81,7 +81,7 @@ What to know:
 - Install Claude Code so the `claude` binary is on your `PATH`, then run `claude login` once.
 - Claude Code streams responses the same way API-based LLMs do.
 - qqqa runs `claude -p` with no built-in tools and no MCP servers (`--tools= --strict-mcp-config`), so it only produces text and each request stays small. The prompt goes on stdin, so large piped input works. This needs a Claude Code release that supports `--tools`.
-- Need to pin a different Claude desktop model? Add `"model_override": "claude-haiku-4-5"` under `model_providers.claude_cli.cli` in `~/.qq/config.json`. That override only applies to the Claude CLI; `qq -m/--model` still takes precedence per run.
+- Need to pin a different Claude desktop model? Add `"model_override": "claude-haiku-5-5"` under `model_providers.claude_cli.cli` in `~/.qq/config.json`. That override only applies to the Claude CLI; `qq -m/--model` still takes precedence per run.
 
 Minimal config snippet:
 
@@ -91,13 +91,13 @@ Minimal config snippet:
   "profiles": {
     "claude_cli": {
       "model_provider": "claude_cli",
-      "model": "claude-haiku-4-5"
+      "model": "claude-haiku-5-5"
     }
   },
   "model_providers": {
     "claude_cli": {
       "cli": {
-        "model_override": "claude-haiku-4-5"
+        "model_override": "claude-haiku-5-5"
       }
     }
   }
@@ -157,13 +157,13 @@ If `~/.qq/config.json` already exists, the init command keeps it untouched and e
 
 The initializer lets you choose the default provider:
 
-- OpenRouter + `openai/gpt-4.1-nano` (default, fast and inexpensive)
+- OpenRouter + `qwen/qwen3.8-27b` on Cerebras (default, very fast and inexpensive)
 - Groq + `openai/gpt-oss-20b` (faster, cheap paid tier)
-- OpenAI + `gpt-5-mini` (slower, a bit smarter)
-- Anthropic + `claude-3-5-sonnet-20241022` (placeholder until their Messages API finalizes)
+- OpenAI + `gpt-6-luna` (inexpensive)
+- Anthropic + `claude-haiku-5-5` (placeholder until their Messages API finalizes)
 - Ollama (runs locally, adjust port if needed)
 - Codex CLI + `gpt-5` (wraps the `codex exec` binary so you can reuse a ChatGPT subscription; no API key needed, buffered output only)
-- Claude Code CLI + `claude-haiku-4-5` (wraps the `claude` binary; `qq` streams live, `qa` buffers so it can parse tool calls)
+- Claude Code CLI + `claude-haiku-5-5` (wraps the `claude` binary; `qq` streams live, `qa` buffers so it can parse tool calls)
   - Need to force a different desktop model? Add `"model_override"` under the provider's `cli` block (supported for both Codex and Claude). That override wins over the profile default but still yields to the per-run `--model` flag.
 - Gemini + `gemini-3-flash-preview` (Google's Gemini via OpenAI-compatible API)
 - Gemini CLI + `gemini-3-flash-preview` (wraps the `gemini` binary; sign in once or set `GEMINI_API_KEY`; buffered output only)
@@ -189,13 +189,14 @@ Built-in defaults (override any of them in `~/.qq/config.json`):
   - `gemini_cli` → mode `cli`, binary `gemini` (install `@google/gemini-cli`; auth via Google sign-in or `GEMINI_API_KEY`)
   - `codex` → mode `cli`, binary `codex` with base args `exec` (install Codex CLI; auth handled by `codex login`). Optional `"model_override"` in the `cli` block forces a fallback ChatGPT model if OpenAI retires the default.
   - `claude_cli` → mode `cli`, binary `claude` (install `@anthropic-ai/claude-code`; auth handled by `claude login`). Optional `"model_override"` pins Claude Code’s `--model` flag without touching your profile’s model.
-  - `codex` → CLI provider, binary `codex` - fails if the binary is missing
 - Profiles
-  - `openrouter` → model `openai/gpt-4.1-nano` (default)
-  - `openai` → model `gpt-5-mini`
+  - `openrouter` → model `qwen/qwen3.8-27b`, routed to Cerebras with `"extra_body": {"provider": {"order": ["cerebras"]}}` (default)
+  - `luna` → OpenRouter, model `openai/gpt-6-luna`
+  - `haiku` → OpenRouter, model `anthropic/claude-haiku-5.5`
+  - `openai` → model `gpt-6-luna`
   - `groq` → model `openai/gpt-oss-20b`
   - `ollama` → model `llama3.1`
-  - `anthropic` → model `claude-3-5-sonnet-20241022` (inactive placeholder until Anthropic integration lands)
+  - `anthropic` → model `claude-haiku-5-5` (inactive placeholder until Anthropic integration lands)
   - `gemini` → model `gemini-3-flash-preview`
   - `gemini_cli` → model `gemini-3-flash-preview` (passed to `gemini -m`)
   - `codex` → model label `gpt-5` (only used for display; Codex CLI picks the backing ChatGPT model unless you pass `-m` or set `model_override`, which qqqa forwards as `codex exec -m`)
@@ -213,7 +214,7 @@ Example override in `~/.qq/config.json`:
   "profiles": {
     "openai": {
       "model_provider": "openai",
-      "model": "gpt-5-mini",
+      "model": "gpt-6-luna",
       "reasoning_effort": "medium"
     }
   }
