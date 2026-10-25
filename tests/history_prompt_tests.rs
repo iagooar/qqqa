@@ -59,7 +59,7 @@ fn prompt_builders_include_sections() {
     let stdin_block = Some("input text\nline2");
     let shell_hint = Some("POSIX sh");
     let qq = build_qq_prompt(
-        Some(os_info::get().os_type()),
+        Some("macOS"),
         shell_hint,
         &hist,
         stdin_block,
@@ -72,7 +72,7 @@ fn prompt_builders_include_sections() {
     let sys = build_qa_system_prompt();
     assert!(sys.contains("Available tools"));
     let user = build_qa_user_message(
-        Some(os_info::get().os_type()),
+        Some("macOS"),
         shell_hint,
         &hist,
         stdin_block,
@@ -96,7 +96,7 @@ fn coalesce_prompt_inputs_uses_piped_text_when_args_empty() {
 
     let shell_hint = Some("POSIX sh");
     let prompt = qqqa::prompt::build_qq_prompt(
-        Some(os_info::get().os_type()),
+        Some("macOS"),
         shell_hint,
         &[],
         stdin_block.as_deref(),

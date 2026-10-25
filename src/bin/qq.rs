@@ -233,15 +233,14 @@ async fn main() -> Result<()> {
         system.push('\n');
         system.push_str(suffix);
     }
-    let os_details = os_info::get();
-    let os_type = os_details.os_type();
-    let shell_kind = detect_shell(os_type);
+    let os_name = qqqa::shell::os_name();
+    let shell_kind = detect_shell();
     if cli.debug {
         eprintln!("[debug] Inferred shell: {}", shell_kind.display_name(),);
     }
     let shell_hint = shell_hint_for_prompt(shell_kind);
     let user = build_qq_user_message(
-        Some(os_type),
+        Some(&os_name),
         Some(shell_hint),
         &history,
         stdin_block.as_deref(),
