@@ -223,7 +223,9 @@ async fn main() -> Result<()> {
     };
 
     // Build system + user messages for formatting/topic control.
-    let mut system = build_qq_system_prompt();
+    let mut system = cfg
+        .qq_system_prompt(cli.profile.as_deref(), cfg_dir)?
+        .unwrap_or_else(build_qq_system_prompt);
     if cfg.no_emoji_enabled() {
         system.push_str("\nHard rule: You MUST NOT use emojis anywhere in the response.\n");
     }
@@ -258,7 +260,8 @@ async fn main() -> Result<()> {
             )?
             .with_reasoning_effort(eff.reasoning_effort.clone())
             .with_temperature(eff.temperature, eff.temperature.is_some())
-            .with_max_tokens(eff.max_tokens, eff.reasoning_max_tokens),
+            .with_max_tokens(eff.max_tokens, eff.reasoning_max_tokens)
+            .with_extra_body(conn.extra_body.clone()),
         ),
         ProviderConnection::Cli(_) => None,
     };
@@ -548,41 +551,31 @@ fn print_copy_notice(raw_output: bool) {
 }
 
 fn persist_config_flags(cli: &Cli) -> Result<()> {
-    let (mut cfg, path) = Config::load_or_init(cli.debug)?;
-    let mut changed = false;
+    let (_, path) = Config::load_or_init(cli.debug)?;
+    Config::update(&path, cli.debug, |cfg| {
+        if cli.no_fun {
+            cfg.no_emoji = Some("true".to_string());
+        }
+        if cli.enable_auto_copy {
+            cfg.set_copy_first_command(true);
+        }
+        if cli.disable_auto_copy {
+            cfg.set_copy_first_command(false);
+        }
+    })?;
 
-    if cli.no_fun {
-        let desired = Some("true".to_string());
-        if cfg.no_emoji != desired {
-            cfg.no_emoji = desired;
-            changed = true;
-        }
-        if cli.debug {
-            eprintln!(
-                "[debug] Disabled emojis in system prompt (persisted at {}).",
-                path.display()
-            );
-        }
+    if cli.no_fun && cli.debug {
+        eprintln!(
+            "[debug] Disabled emojis in system prompt (persisted at {}).",
+            path.display()
+        );
     }
 
     if cli.enable_auto_copy {
-        if !cfg.copy_first_command_enabled() {
-            cfg.set_copy_first_command(true);
-            changed = true;
-        }
         qqqa::outln!("Auto-copy first command: enabled (persisted).");
     }
-
     if cli.disable_auto_copy {
-        if cfg.copy_first_command_enabled() {
-            cfg.set_copy_first_command(false);
-            changed = true;
-        }
         qqqa::outln!("Auto-copy first command: disabled (persisted).");
-    }
-
-    if changed {
-        cfg.save(&path, cli.debug)?;
     }
 
     Ok(())

@@ -26,8 +26,7 @@ fn run_init_with_bin(bin: &str, input: &str) -> Config {
     cmd.assert().success();
 
     let config_path = config_dir_for_home(&home_path).join("config.json");
-    let bytes = fs::read(&config_path).expect("config json");
-    serde_json::from_slice(&bytes).expect("parse config")
+    Config::load_from(&config_path).expect("config json")
 }
 
 fn run_qq_init(input: &str) -> Config {
@@ -40,8 +39,7 @@ fn run_qa_init(input: &str) -> Config {
 
 fn read_config_from_home(home: &Path) -> Config {
     let config_path = config_dir_for_home(home).join("config.json");
-    let bytes = fs::read(&config_path).expect("config json");
-    serde_json::from_slice(&bytes).expect("parse config")
+    Config::load_from(&config_path).expect("config json")
 }
 
 #[test]
@@ -488,4 +486,306 @@ fn config_dir_keeps_legacy_when_config_exists() {
     unsafe {
         std::env::remove_var("XDG_CONFIG_HOME");
     }
+}
+
+fn write_json(dir: &Path, value: &serde_json::Value) -> std::path::PathBuf {
+    let path = dir.join("config.json");
+    fs::write(&path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
+    path
+}
+
+fn read_json(path: &Path) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+}
+
+#[test]
+fn minimal_config_file_layers_over_defaults() {
+    let dir = tempdir().unwrap();
+    let path = write_json(dir.path(), &serde_json::json!({"default_profile": "groq"}));
+    let cfg = Config::load_from(&path).unwrap();
+    assert_eq!(cfg.default_profile, "groq");
+    assert!(cfg.profiles.contains_key("gemini"));
+    assert!(cfg.model_providers.contains_key("claude_cli"));
+}
+
+#[test]
+fn config_from_an_older_release_gets_new_profiles() {
+    let dir = tempdir().unwrap();
+    let mut old = serde_json::to_value(Config::default()).unwrap();
+    for key in ["gemini", "gemini_cli"] {
+        old["profiles"].as_object_mut().unwrap().remove(key);
+        old["model_providers"].as_object_mut().unwrap().remove(key);
+    }
+    let path = write_json(dir.path(), &old);
+    let cfg = Config::load_from(&path).unwrap();
+    assert!(cfg.profiles.contains_key("gemini"));
+    assert!(cfg.model_providers.contains_key("gemini_cli"));
+}
+
+#[test]
+fn nested_override_keeps_the_other_defaults() {
+    let dir = tempdir().unwrap();
+    let path = write_json(
+        dir.path(),
+        &serde_json::json!({"profiles": {"openai": {"model": "gpt-x"}}}),
+    );
+    let cfg = Config::load_from(&path).unwrap();
+    let openai = &cfg.profiles["openai"];
+    assert_eq!(openai.model, "gpt-x");
+    assert_eq!(openai.model_provider, "openai");
+    assert_eq!(cfg.default_profile, "openrouter");
+}
+
+#[test]
+fn save_writes_only_what_differs_from_defaults() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let mut cfg = Config::default();
+    cfg.set_copy_first_command(true);
+    cfg.profiles.get_mut("openai").unwrap().model = "gpt-x".into();
+    cfg.save(&path, false).unwrap();
+    assert_eq!(
+        read_json(&path),
+        serde_json::json!({
+            "default_profile": "openrouter",
+            "copy_first_command": true,
+            "profiles": {"openai": {"model": "gpt-x"}}
+        })
+    );
+    cfg.set_copy_first_command(false);
+    cfg.save(&path, false).unwrap();
+    assert!(read_json(&path).get("copy_first_command").is_none());
+    let back = Config::load_from(&path).unwrap();
+    assert_eq!(back.profiles["openai"].model, "gpt-x");
+}
+
+#[test]
+fn saving_a_full_old_config_keeps_only_overrides() {
+    let dir = tempdir().unwrap();
+    let mut old = serde_json::to_value(Config::default()).unwrap();
+    old["include_history"] = serde_json::json!(true);
+    let path = write_json(dir.path(), &old);
+    let cfg = Config::load_from(&path).unwrap();
+    cfg.save(&path, false).unwrap();
+    assert_eq!(
+        read_json(&path),
+        serde_json::json!({"default_profile": "openrouter", "include_history": true})
+    );
+}
+
+#[test]
+fn unknown_keys_survive_a_save_at_every_level() {
+    let dir = tempdir().unwrap();
+    let path = write_json(
+        dir.path(),
+        &serde_json::json!({
+            "default_profile": "openrouter",
+            "future_option": {"a": 1},
+            "profiles": {"openai": {"model": "gpt-x", "future_profile_key": true}},
+            "model_providers": {
+                "openrouter": {"future_provider_key": "keep"},
+                "codex": {"cli": {"future_cli_key": 3}}
+            }
+        }),
+    );
+    let mut cfg = Config::load_from(&path).unwrap();
+    cfg.set_copy_first_command(true);
+    cfg.save(&path, false).unwrap();
+    let saved = read_json(&path);
+    assert_eq!(saved["future_option"], serde_json::json!({"a": 1}));
+    assert_eq!(saved["profiles"]["openai"]["future_profile_key"], true);
+    assert_eq!(
+        saved["model_providers"]["openrouter"]["future_provider_key"],
+        "keep"
+    );
+    assert_eq!(
+        saved["model_providers"]["codex"]["cli"]["future_cli_key"],
+        3
+    );
+    assert_eq!(saved["copy_first_command"], true);
+}
+
+#[test]
+fn save_leaves_no_temp_file_and_a_private_file() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    Config::default().save(&path, false).unwrap();
+    Config::default().save(&path, false).unwrap();
+    let names: Vec<String> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["config.json".to_string()]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn save_through_a_symlink_keeps_the_link() {
+    let dir = tempdir().unwrap();
+    let real = dir.path().join("real.json");
+    Config::default().save(&real, false).unwrap();
+    let link = dir.path().join("config.json");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let mut cfg = Config::load_from(&link).unwrap();
+    cfg.set_copy_first_command(true);
+    cfg.save(&link, false).unwrap();
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(read_json(&real)["copy_first_command"], true);
+}
+
+#[test]
+fn concurrent_updates_keep_every_change() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    Config::default().save(&path, false).unwrap();
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                Config::update(&path, false, |cfg| {
+                    cfg.add_command_to_allowlist(&format!("tool{i}"));
+                    // Widen the window between the read and the write.
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                })
+                .unwrap();
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let cfg = Config::load_from(&path).unwrap();
+    let mut list = cfg.command_allowlist();
+    list.sort();
+    let want: Vec<String> = (0..8).map(|i| format!("tool{i}")).collect();
+    assert_eq!(list, want);
+}
+
+#[test]
+fn provider_headers_layer_over_the_defaults() {
+    let dir = tempdir().unwrap();
+    let path = write_json(
+        dir.path(),
+        &serde_json::json!({"model_providers": {"openrouter": {
+            "api_key": "k",
+            "headers": {"X-Title": "mine", "X-Extra": "1"}
+        }}}),
+    );
+    let cfg = Config::load_from(&path).unwrap();
+    let eff = cfg.resolve_profile(Some("openrouter"), None, None).unwrap();
+    let http = eff.http().unwrap();
+    assert_eq!(http.headers["X-Title"], "mine");
+    assert_eq!(http.headers["X-Extra"], "1");
+    assert_eq!(
+        http.headers["HTTP-Referer"],
+        "https://github.com/iagooar/qqqa"
+    );
+}
+
+fn config_in(config: serde_json::Value, dir: &Path) -> Config {
+    let mut config = config;
+    config["model_providers"]["openrouter"]["api_key"] = serde_json::json!("k");
+    Config::load_from(&write_json(dir, &config)).unwrap()
+}
+
+fn qq_prompt(config: serde_json::Value, dir: &Path) -> anyhow::Result<Option<String>> {
+    config_in(config, dir).qq_system_prompt(Some("openrouter"), Some(dir))
+}
+
+#[test]
+fn system_prompt_text_file_and_precedence() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("prompt.txt"), "From file.").unwrap();
+
+    let text = qq_prompt(serde_json::json!({"system_prompt": "Global."}), dir.path()).unwrap();
+    assert_eq!(text.as_deref(), Some("Global."));
+
+    let file = qq_prompt(
+        serde_json::json!({"profiles": {"openrouter": {"system_prompt_file": "prompt.txt"}}}),
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(file.as_deref(), Some("From file."));
+
+    let profile_wins = qq_prompt(
+        serde_json::json!({
+            "system_prompt": "Global.",
+            "profiles": {"openrouter": {"system_prompt": "Profile."}}
+        }),
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(profile_wins.as_deref(), Some("Profile."));
+
+    let blank = qq_prompt(serde_json::json!({"system_prompt": "  "}), dir.path()).unwrap();
+    assert!(blank.is_none());
+}
+
+#[test]
+fn system_prompt_errors_are_clear() {
+    let dir = tempdir().unwrap();
+    let both = qq_prompt(
+        serde_json::json!({"system_prompt": "a", "system_prompt_file": "b.txt"}),
+        dir.path(),
+    );
+    assert!(both.unwrap_err().to_string().contains("only one of"));
+    let missing = qq_prompt(
+        serde_json::json!({"system_prompt_file": "nope.txt"}),
+        dir.path(),
+    );
+    assert!(format!("{:#}", missing.unwrap_err()).contains("system_prompt_file"));
+}
+
+#[test]
+fn a_missing_qq_prompt_file_does_not_stop_profile_resolution() {
+    let dir = tempdir().unwrap();
+    let cfg = config_in(
+        serde_json::json!({"system_prompt_file": "nope.txt"}),
+        dir.path(),
+    );
+    // qa resolves the profile and never reads the qq-only prompt file.
+    assert!(
+        cfg.resolve_profile(Some("openrouter"), None, Some(dir.path()))
+            .is_ok()
+    );
+}
+
+#[test]
+fn values_without_a_default_are_saved_exactly() {
+    let dir = tempdir().unwrap();
+    let body = serde_json::json!({
+        "response_format": {"type": "json_schema", "json_schema": {"schema": {
+            "properties": {"metadata": {}}, "required": ["metadata"]
+        }}},
+        "seed": null
+    });
+    let path = write_json(
+        dir.path(),
+        &serde_json::json!({"profiles": {"openai": {"extra_body": body.clone()}}}),
+    );
+    let mut cfg = Config::load_from(&path).unwrap();
+    cfg.set_copy_first_command(true);
+    cfg.save(&path, false).unwrap();
+    assert_eq!(read_json(&path)["profiles"]["openai"]["extra_body"], body);
+    let custom = serde_json::json!({"model_provider": "openai", "model": "m", "extra_body": {}});
+    let path = write_json(
+        dir.path(),
+        &serde_json::json!({"profiles": {"mine": custom}}),
+    );
+    Config::load_from(&path)
+        .unwrap()
+        .save(&path, false)
+        .unwrap();
+    assert_eq!(read_json(&path)["profiles"]["mine"]["model"], "m");
 }

@@ -134,6 +134,15 @@ Download the Windows archive from Releases (choose the architecture that matches
 
 On first run qqqa creates a config file with safe permissions. The default path is `~/.qq/config.json`. If `XDG_CONFIG_HOME` is set and no legacy `~/.qq/config.json` exists, config is stored at `$XDG_CONFIG_HOME/qq/config.json` instead.
 
+The config file holds only your changes. qqqa keeps its defaults (providers, profiles, models) built in and layers the file over them key by key, so new providers and profiles from an update reach you without editing the file. A file from an older release, with every default spelled out, keeps working; the next time qqqa saves it (for example `qq --no-fun`), it is rewritten with only the values that differ from the defaults. For example, this is a complete config:
+
+```json
+{
+  "default_profile": "groq",
+  "profiles": { "groq": { "model": "openai/gpt-oss-120b" } }
+}
+```
+
 For a smooth first interaction, run the init flow:
 
 ```sh
@@ -167,7 +176,7 @@ It also offers to store an API key in the config (optional). If you prefer envir
 - `OLLAMA_API_KEY` (optional; any non-empty string works—even `local`—because the Authorization header cannot be blank)
 - No API key is required for the Codex or Claude CLI profiles—their binaries handle auth (`codex login` / `claude login`). Gemini CLI accepts Google sign-in or `GEMINI_API_KEY`.
 
-Defaults written to `~/.qq/config.json`:
+Built-in defaults (override any of them in `~/.qq/config.json`):
 
 - Providers
   - `openrouter` → base `https://openrouter.ai/api/v1`, env `OPENROUTER_API_KEY`, default headers `HTTP-Referer=https://github.com/iagooar/qqqa` and `X-Title=qqqa`
@@ -190,6 +199,7 @@ Defaults written to `~/.qq/config.json`:
   - `gemini_cli` → model `gemini-3-flash-preview` (passed to `gemini -m`)
   - `codex` → model label `gpt-5` (only used for display; Codex CLI picks the backing ChatGPT model)
 - Optional per-profile or global `prompt_suffix` text appended to the built-in system prompt (does not replace it). Useful for rules like "assume tools are installed" or "be less chatty".
+- Optional per-profile or global `system_prompt` (text) or `system_prompt_file` (path; relative paths resolve against the config directory) that replaces qq's built-in system prompt, for example to use qq for general questions or to define prompt "modes" as profiles. A profile's setting wins over the global one; set only one of the two per level. `prompt_suffix` and `--no-fun` still apply on top. qa keeps its own system prompt, because it defines the tool-call protocol. Note that qq's formatting tags (`<cmd>`, `<info>`, …) only appear if your prompt asks for them.
 - Optional per-profile `reasoning_effort` for GPT-5 family models. If you leave it unset, qqqa sends `"reasoning_effort": "minimal"` for any `gpt-5*` model to keep responses fast. Set it to `"low"`, `"medium"`, or `"high"` when you want deeper reasoning.
 - (discouraged) Optional per-profile `temperature`. Most models default to `0.15` unless you set it in `~/.qq/config.json` or pass `--temperature <value>` for a single run. GPT-5 models ignore custom temperatures; qqqa forces them to `1.0`.
 - Optional per-profile `max_tokens` (output cap for ordinary models, default `4096`) and `reasoning_max_tokens` (output cap for reasoning models such as `gpt-5*`, `o1`, `o3`, whose reasoning tokens count against it; it falls back to `max_tokens`, then to `16384`). When an answer stops at the cap, qq and qa print what arrived and exit with an error that names the limit, so scripts never take a cut-off answer as complete.
@@ -358,6 +368,26 @@ When qa runs a command, its output streams live (stdout to stdout, stderr to std
 The runner enforces a default allowlist (think `ls`, `grep`, `find`, `rg`, `awk`, etc.) and rejects pipelines, redirection, and other high-risk constructs. When a command is blocked, `qa` prompts you to add it to `command_allowlist` inside `~/.qq/config.json`; approving once persists the choice and updates future runs. On Windows it automatically adapts to the active environment so built-ins like `dir` or `Get-ChildItem` keep working without extra flags.
 
 ## Advanced features and configurations
+
+### Custom headers and request fields (provider routing)
+
+Any HTTP provider accepts `headers` (sent with every request) and `extra_body` (JSON fields merged into every request body). A profile can add its own `extra_body`, which wins over the provider's. qqqa always sets `model`, `messages`, `stream` and `tools` itself; `extra_body` cannot replace them.
+
+For example, to send `openai/gpt-oss-120b` through Groq on OpenRouter ([provider routing](https://openrouter.ai/docs/features/provider-routing)):
+
+```json
+{
+  "profiles": {
+    "oss": {
+      "model_provider": "openrouter",
+      "model": "openai/gpt-oss-120b",
+      "extra_body": { "provider": { "order": ["groq"], "allow_fallbacks": false } }
+    }
+  }
+}
+```
+
+The OpenRouter provider's default headers (`HTTP-Referer`, `X-Title`) are ordinary `headers` entries; set your own values to replace them.
 
 ### Custom TLS certificates (self-signed proxies)
 

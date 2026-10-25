@@ -601,3 +601,88 @@ fn qa_prints_an_explanation_sent_through_the_json_tool() {
     assert_eq!(code, Some(0), "{stderr}");
     assert!(stdout.contains("I will not run that."), "{stdout}");
 }
+
+fn write_config(home: &Path, config: &serde_json::Value) {
+    let dir = home.join(".qq");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.json"), config.to_string()).unwrap();
+}
+
+#[test]
+fn qq_sends_configured_headers_and_extra_body() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let server = MockServer::start();
+    let routed = server.mock(|when, then| {
+        when.method(POST)
+            .path("/chat/completions")
+            .header("x-custom", "yes")
+            .header("x-title", "qqqa")
+            .body_contains(r#""provider":{"order":["groq"]}"#)
+            .body_contains("middle-out")
+            .body_contains(r#""model":"openai/gpt-4.1-nano""#);
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(sse(&["routed"]));
+    });
+    let home = tempdir().unwrap();
+    write_config(
+        home.path(),
+        &serde_json::json!({
+            "model_providers": {"openrouter": {
+                "headers": {"X-Custom": "yes"},
+                "extra_body": {"provider": {"order": ["groq"]}, "model": "not-this"}
+            }},
+            "profiles": {"openrouter": {"extra_body": {"transforms": ["middle-out"]}}}
+        }),
+    );
+    let out = qq(home.path(), &server)
+        .args(["-r", "x"])
+        .write_stdin("")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(routed.hits(), 1);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("routed"));
+}
+
+#[test]
+fn qq_uses_a_configured_system_prompt() {
+    if sandbox_blocks_binding() {
+        return;
+    }
+    let server = MockServer::start();
+    let custom = server.mock(|when, then| {
+        when.method(POST)
+            .path("/chat/completions")
+            .body_contains("You are a friendly general assistant.")
+            .matches(|req| {
+                !String::from_utf8_lossy(req.body.as_deref().unwrap_or_default())
+                    .contains("TOPIC RESTRICTIONS")
+            });
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(sse(&["hello"]));
+    });
+    let home = tempdir().unwrap();
+    write_config(
+        home.path(),
+        &serde_json::json!({"system_prompt": "You are a friendly general assistant."}),
+    );
+    let out = qq(home.path(), &server)
+        .args(["-r", "x"])
+        .write_stdin("")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(custom.hits(), 1);
+}

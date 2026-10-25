@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use fs_err as fs;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -54,6 +55,9 @@ pub struct CliProviderConfig {
     /// Optional hard override for the CLI model flag (useful if the vendor retires a default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<String>,
+    /// Keys this release does not know; kept so a save never drops them.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +81,16 @@ pub struct ModelProvider {
     /// Optional CLI-specific parameters (required when mode = cli).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli: Option<CliProviderConfig>,
+    /// HTTP headers sent with every request to this provider.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub headers: HashMap<String, String>,
+    /// Extra JSON fields merged into every request body to this provider
+    /// (for example OpenRouter's `provider` routing object).
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra_body: serde_json::Map<String, Value>,
+    /// Keys this release does not know; kept so a save never drops them.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -87,6 +101,9 @@ pub struct ProviderTlsConfig {
     /// Optional env var name whose value points to the bundle path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_bundle_env: Option<String>,
+    /// Keys this release does not know; kept so a save never drops them.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +125,14 @@ pub struct Profile {
     /// Optional text appended to the built-in system prompt for this profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_suffix: Option<String>,
+    /// Text that replaces qq's built-in system prompt (qa keeps its own,
+    /// because it defines the tool protocol). `prompt_suffix` still applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Like `system_prompt`, read from a file; relative paths resolve against
+    /// the config directory. Set at most one of the two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_file: Option<PathBuf>,
     /// Optional output cap (tokens) for ordinary models. Default 4096.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
@@ -115,6 +140,13 @@ pub struct Profile {
     /// against it. Falls back to `max_tokens`, then to 16384.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_max_tokens: Option<u32>,
+    /// Extra JSON fields merged into the request body for this profile; they
+    /// win over the provider's `extra_body`.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra_body: serde_json::Map<String, Value>,
+    /// Keys this release does not know; kept so a save never drops them.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +169,17 @@ pub struct Config {
     /// Optional text appended to the built-in system prompt for every profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_suffix: Option<String>,
+    /// For every profile without its own: text that replaces qq's built-in system prompt (qa keeps its own,
+    /// because it defines the tool protocol). `prompt_suffix` still applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Like `system_prompt`, read from a file; relative paths resolve against
+    /// the config directory. Set at most one of the two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_file: Option<PathBuf>,
+    /// Keys this release does not know; kept so a save never drops them.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 /// Resolve the qqqa config directory for a given home path.
@@ -170,6 +213,9 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
+                extra: Default::default(),
                 cli: None,
             },
         );
@@ -183,6 +229,15 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                headers: HashMap::from([
+                    (
+                        "HTTP-Referer".to_string(),
+                        "https://github.com/iagooar/qqqa".to_string(),
+                    ),
+                    ("X-Title".to_string(), "qqqa".to_string()),
+                ]),
+                extra_body: Default::default(),
+                extra: Default::default(),
                 cli: None,
             },
         );
@@ -196,6 +251,9 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
+                extra: Default::default(),
                 cli: None,
             },
         );
@@ -209,6 +267,9 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
+                extra: Default::default(),
                 cli: None,
             },
         );
@@ -222,6 +283,9 @@ impl Default for Config {
                 local: true,
                 tls: None,
                 mode: ProviderMode::Http,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
+                extra: Default::default(),
                 cli: None,
             },
         );
@@ -235,11 +299,15 @@ impl Default for Config {
                 local: true,
                 tls: None,
                 mode: ProviderMode::Cli,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
+                extra: Default::default(),
                 cli: Some(CliProviderConfig {
                     engine: CliEngine::Codex,
                     binary: "codex".to_string(),
                     base_args: vec!["exec".to_string()],
                     model_override: None,
+                    extra: Default::default(),
                 }),
             },
         );
@@ -253,11 +321,15 @@ impl Default for Config {
                 local: true,
                 tls: None,
                 mode: ProviderMode::Cli,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
+                extra: Default::default(),
                 cli: Some(CliProviderConfig {
                     engine: CliEngine::Claude,
                     binary: "claude".to_string(),
                     base_args: Vec::new(),
                     model_override: None,
+                    extra: Default::default(),
                 }),
             },
         );
@@ -271,6 +343,9 @@ impl Default for Config {
                 local: false,
                 tls: None,
                 mode: ProviderMode::Http,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
+                extra: Default::default(),
                 cli: None,
             },
         );
@@ -284,11 +359,15 @@ impl Default for Config {
                 local: true,
                 tls: None,
                 mode: ProviderMode::Cli,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
+                extra: Default::default(),
                 cli: Some(CliProviderConfig {
                     engine: CliEngine::Gemini,
                     binary: "gemini".to_string(),
                     base_args: Vec::new(),
                     model_override: None,
+                    extra: Default::default(),
                 }),
             },
         );
@@ -303,8 +382,12 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -316,8 +399,12 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -329,8 +416,12 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -342,8 +433,12 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -355,8 +450,12 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -368,8 +467,12 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -381,8 +484,12 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -394,8 +501,12 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
+                extra: Default::default(),
             },
         );
         profiles.insert(
@@ -407,8 +518,12 @@ impl Default for Config {
                 temperature: None,
                 timeout: None,
                 prompt_suffix: None,
+                system_prompt: None,
+                system_prompt_file: None,
                 max_tokens: None,
                 reasoning_max_tokens: None,
+                extra_body: Default::default(),
+                extra: Default::default(),
             },
         );
 
@@ -421,6 +536,9 @@ impl Default for Config {
             no_emoji: None,
             command_allowlist: None,
             prompt_suffix: None,
+            system_prompt: None,
+            system_prompt_file: None,
+            extra: Default::default(),
         }
     }
 }
@@ -432,6 +550,8 @@ pub struct HttpConnection {
     pub request_timeout_secs: Option<u64>,
     pub is_local: bool,
     pub headers: HashMap<String, String>,
+    /// Provider `extra_body` with the profile's on top.
+    pub extra_body: serde_json::Map<String, Value>,
     pub tls: Option<ResolvedTlsConfig>,
 }
 
@@ -485,7 +605,82 @@ impl EffectiveProfile {
     }
 }
 
+/// Merge `over` into `base`: objects merge key by key; any other value replaces.
+fn merge_json(base: &mut Value, over: Value) {
+    match (base, over) {
+        (Value::Object(base), Value::Object(over)) => {
+            for (key, value) in over {
+                match base.get_mut(&key) {
+                    Some(slot) => merge_json(slot, value),
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, over) => *base = over,
+    }
+}
+
+/// The parts of `current` that differ from `defaults`. Objects are compared
+/// key by key; other values are kept whole when they differ.
+fn json_overrides(current: &Value, defaults: &Value) -> Option<Value> {
+    match current {
+        Value::Object(map) => {
+            let empty = serde_json::Map::new();
+            let defaults = defaults.as_object().unwrap_or(&empty);
+            let out: serde_json::Map<String, Value> = map
+                .iter()
+                .filter_map(|(key, value)| match defaults.get(key) {
+                    Some(default) => json_overrides(value, default).map(|v| (key.clone(), v)),
+                    // No default to compare with: keep the user's value exactly,
+                    // including empty objects and nulls (e.g. inside extra_body).
+                    None => Some((key.clone(), value.clone())),
+                })
+                .collect();
+            (!out.is_empty()).then_some(Value::Object(out))
+        }
+        _ if current == defaults => None,
+        _ => Some(current.clone()),
+    }
+}
+
 impl Config {
+    /// Build a config from the JSON in a config file, layered over the
+    /// built-in defaults. The file holds only what the user changed; a file
+    /// written by an older release (all defaults spelled out) also works.
+    pub fn from_overrides(overrides: Value) -> Result<Self> {
+        let mut merged = serde_json::to_value(Config::default())?;
+        merge_json(&mut merged, overrides);
+        Ok(serde_json::from_value(merged)?)
+    }
+
+    /// The JSON to write to the config file: only what differs from the
+    /// built-in defaults, plus `default_profile` so the file shows where to start.
+    pub fn to_overrides(&self) -> Result<Value> {
+        let current = serde_json::to_value(self)?;
+        let defaults = serde_json::to_value(Config::default())?;
+        let mut out = json_overrides(&current, &defaults)
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        if let Value::Object(map) = &mut out {
+            map.insert(
+                "default_profile".to_string(),
+                Value::String(self.default_profile.clone()),
+            );
+        }
+        Ok(out)
+    }
+
+    /// Read and layer the config file at `path`.
+    pub fn load_from(path: &Path) -> Result<Self> {
+        let bytes =
+            fs::read(path).with_context(|| format!("Reading config: {}", path.display()))?;
+        let overrides: Value = serde_json::from_slice(&bytes)
+            .with_context(|| format!("Parsing config JSON: {}", path.display()))?;
+        Config::from_overrides(overrides)
+            .with_context(|| format!("Invalid config: {}", path.display()))
+    }
+
     /// Load config from disk or create a default one on first run.
     pub fn load_or_init(debug: bool) -> Result<(Self, PathBuf)> {
         let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
@@ -499,28 +694,39 @@ impl Config {
         }
 
         if path.exists() {
-            let bytes =
-                fs::read(&path).with_context(|| format!("Reading config: {}", path.display()))?;
-            let cfg: Config =
-                serde_json::from_slice(&bytes).with_context(|| "Parsing config JSON")?;
+            let cfg = Config::load_from(&path)?;
             set_permissions_file(&path, debug).ok();
             Ok((cfg, path))
         } else {
             let cfg = Config::default();
-            let json = serde_json::to_vec_pretty(&cfg).unwrap();
-            fs::write(&path, json)
-                .with_context(|| format!("Writing default config: {}", path.display()))?;
-            set_permissions_file(&path, debug).ok();
+            cfg.save(&path, debug)?;
             Ok((cfg, path))
         }
     }
 
-    /// Save config back to the given path with pretty JSON and safe permissions.
+    /// Save the user's overrides (see [`Config::to_overrides`]) with safe permissions.
     pub fn save(&self, path: &Path, debug: bool) -> Result<()> {
-        let json = serde_json::to_vec_pretty(self).with_context(|| "Serializing config JSON")?;
-        fs::write(path, json).with_context(|| format!("Writing config: {}", path.display()))?;
+        let json = serde_json::to_vec_pretty(&self.to_overrides()?)
+            .with_context(|| "Serializing config JSON")?;
+        write_atomic(path, &json).with_context(|| format!("Writing config: {}", path.display()))?;
         set_permissions_file(path, debug).ok();
         Ok(())
+    }
+
+    /// Change the config file at `path` safely when other qq/qa runs may save
+    /// at the same time: take a lock, re-read the file, apply `change`, save,
+    /// and return the result. Without the lock, two runs that both load and
+    /// then save lose one of the two changes.
+    pub fn update(path: &Path, debug: bool, change: impl FnOnce(&mut Config)) -> Result<Config> {
+        let _lock = lock_config(path)?;
+        let mut cfg = if path.exists() {
+            Config::load_from(path)?
+        } else {
+            Config::default()
+        };
+        change(&mut cfg);
+        cfg.save(path, debug)?;
+        Ok(cfg)
     }
 
     /// Whether the no-emoji flag is effectively enabled.
@@ -647,7 +853,9 @@ impl Config {
                         provider_key
                     ));
                 }
-                let headers = provider_default_headers(provider_key);
+                let headers = provider.headers.clone();
+                let mut extra_body = provider.extra_body.clone();
+                extra_body.extend(profile.extra_body.clone());
                 // Prefer inline api_key; else env var per env_key. Local providers fall back to a
                 // placeholder key so callers can continue to send an Authorization header.
                 let api_key = if let Some(k) = provider.api_key.clone() {
@@ -676,6 +884,7 @@ impl Config {
                     request_timeout_secs,
                     is_local: provider.local,
                     headers,
+                    extra_body,
                     tls,
                 })
             }
@@ -707,6 +916,33 @@ impl Config {
             max_tokens: profile.max_tokens,
             reasoning_max_tokens: profile.reasoning_max_tokens,
         })
+    }
+
+    /// The configured replacement for qq's system prompt, if any: the
+    /// profile's `system_prompt`/`system_prompt_file`, else the config root's.
+    /// Only qq calls this, so a qq prompt file can never stop qa from starting.
+    pub fn qq_system_prompt(
+        &self,
+        profile_opt: Option<&str>,
+        config_dir: Option<&Path>,
+    ) -> Result<Option<String>> {
+        let profile_name = profile_opt.unwrap_or(&self.default_profile);
+        if let Some(profile) = self.profiles.get(profile_name)
+            && let Some(prompt) = resolve_system_prompt(
+                profile.system_prompt.as_deref(),
+                profile.system_prompt_file.as_deref(),
+                config_dir,
+                &format!("profile '{}'", profile_name),
+            )?
+        {
+            return Ok(Some(prompt));
+        }
+        resolve_system_prompt(
+            self.system_prompt.as_deref(),
+            self.system_prompt_file.as_deref(),
+            config_dir,
+            "the config",
+        )
     }
 
     /// Interactive initializer that writes a fresh config and allows choosing
@@ -901,9 +1137,7 @@ impl Config {
         let copy_enabled = matches!(copy_choice.as_str(), "y" | "yes");
         cfg.set_copy_first_command(copy_enabled);
 
-        let json = serde_json::to_vec_pretty(&cfg)?;
-        fs::write(&path, json).with_context(|| format!("Writing config: {}", path.display()))?;
-        set_permissions_file(&path, debug).ok();
+        cfg.save(&path, debug)?;
         println!(
             "\nWrote {} with default profile '{}'.",
             path.display(),
@@ -963,21 +1197,6 @@ impl ProviderTlsConfig {
     }
 }
 
-fn provider_default_headers(provider_key: &str) -> HashMap<String, String> {
-    match provider_key {
-        "openrouter" => {
-            let mut headers = HashMap::new();
-            headers.insert(
-                "HTTP-Referer".to_string(),
-                "https://github.com/iagooar/qqqa".to_string(),
-            );
-            headers.insert("X-Title".to_string(), "qqqa".to_string());
-            headers
-        }
-        _ => HashMap::new(),
-    }
-}
-
 fn set_permissions_dir(path: &Path, _debug: bool) -> Result<()> {
     #[cfg(unix)]
     {
@@ -987,6 +1206,95 @@ fn set_permissions_dir(path: &Path, _debug: bool) -> Result<()> {
         fs::set_permissions(path, perms)?;
     }
     Ok(())
+}
+
+/// The system prompt set at one level (a profile, or the config), if any.
+/// Blank text counts as unset; setting both the text and a file is an error.
+fn resolve_system_prompt(
+    text: Option<&str>,
+    file: Option<&Path>,
+    config_dir: Option<&Path>,
+    level: &str,
+) -> Result<Option<String>> {
+    match (text, file) {
+        (Some(_), Some(_)) => Err(anyhow!(
+            "Set only one of system_prompt and system_prompt_file in {}",
+            level
+        )),
+        (Some(text), None) => Ok(Some(text.to_string()).filter(|t| !t.trim().is_empty())),
+        (None, Some(file)) => {
+            let path = match config_dir {
+                Some(dir) if !file.is_absolute() => dir.join(file),
+                _ => file.to_path_buf(),
+            };
+            let text = fs::read_to_string(&path)
+                .with_context(|| format!("Reading system_prompt_file for {}", level))?;
+            Ok(Some(text).filter(|t| !t.trim().is_empty()))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+/// Write `bytes` to `path` so a reader sees the old file or the new one, never
+/// a partial one: write a temp file (mode 0600) next to it, fsync, rename.
+/// A symlinked config file is replaced at its target.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+
+    let target = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => fs::canonicalize(path)?,
+        _ => path.to_path_buf(),
+    };
+    let dir = target
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| CONFIG_FILE_NAME.to_string());
+    let tmp = dir.join(format!(".{}.{}.tmp", name, std::process::id()));
+    let result = (|| -> Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, &target)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Exclusive advisory lock for read-modify-write of the config file, held
+/// until the returned file is dropped. It locks a separate `.lock` file,
+/// because the rename in [`write_atomic`] replaces the config file itself.
+fn lock_config(path: &Path) -> Result<std::fs::File> {
+    let lock_path = path.with_extension("json.lock");
+    if let Some(dir) = lock_path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        fs::create_dir_all(dir)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("Opening config lock: {}", lock_path.display()))?;
+    file.lock()
+        .with_context(|| format!("Locking config: {}", lock_path.display()))?;
+    Ok(file)
 }
 
 fn set_permissions_file(path: &Path, _debug: bool) -> Result<()> {
@@ -1011,6 +1319,7 @@ mod tests {
         let tls = ProviderTlsConfig {
             ca_bundle_path: Some(PathBuf::from("certs/litellm-ca.pem")),
             ca_bundle_env: None,
+            extra: Default::default(),
         };
         let resolved = tls
             .resolve(Some(dir.path()))
@@ -1033,6 +1342,7 @@ mod tests {
         let tls = ProviderTlsConfig {
             ca_bundle_path: Some(PathBuf::from("ignored.pem")),
             ca_bundle_env: Some(key.to_string()),
+            extra: Default::default(),
         };
         let resolved = tls
             .resolve(None)
