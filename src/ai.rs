@@ -218,7 +218,7 @@ impl ChatClient {
 
     /// The output cap for `model`: reasoning models use the reasoning cap first.
     pub fn max_tokens_for(&self, model: &str) -> u32 {
-        if Self::is_new_style_model(model) {
+        if Self::is_reasoning_model(model) {
             self.reasoning_max_tokens
                 .or(self.max_tokens)
                 .unwrap_or(DEFAULT_REASONING_MAX_TOKENS)
@@ -235,18 +235,27 @@ impl ChatClient {
         builder.bearer_auth(&self.api_key)
     }
 
-    fn is_new_style_model(model: &str) -> bool {
-        let lower = model.to_ascii_lowercase();
-        const PREFIXES: [&str; 3] = ["gpt-5", "o1", "o3"];
-        PREFIXES.iter().any(|prefix| lower.starts_with(prefix))
+    /// The model name without a `vendor/` prefix (`openai/gpt-5-mini` ->
+    /// `gpt-5-mini`), lowercased, so rules work through routers like OpenRouter.
+    fn base_model(model: &str) -> String {
+        model
+            .rsplit('/')
+            .next()
+            .unwrap_or(model)
+            .to_ascii_lowercase()
     }
 
-    fn is_gpt5_model(model: &str) -> bool {
-        model.to_ascii_lowercase().starts_with("gpt-5")
+    /// OpenAI reasoning models (GPT-5 family, o1/o3/o4…): they take
+    /// `max_completion_tokens`, reject a custom temperature, and count
+    /// reasoning tokens against the output cap.
+    fn is_reasoning_model(model: &str) -> bool {
+        let base = Self::base_model(model);
+        let o_series = base.starts_with('o') && base[1..].starts_with(|c: char| c.is_ascii_digit());
+        base.starts_with("gpt-5") || o_series
     }
 
     fn max_tokens_param(model: &str) -> &'static str {
-        if Self::is_new_style_model(model) {
+        if Self::is_reasoning_model(model) {
             "max_completion_tokens"
         } else {
             "max_tokens"
@@ -254,7 +263,7 @@ impl ChatClient {
     }
 
     fn temperature_directive(&self, model: &str) -> TemperatureDirective {
-        if Self::is_gpt5_model(model) {
+        if Self::is_reasoning_model(model) {
             if self.temperature_override.is_some() {
                 TemperatureDirective::Send(1.0)
             } else {
@@ -265,11 +274,12 @@ impl ChatClient {
         }
     }
 
+    /// `minimal` keeps GPT-5 answers fast. Later GPT-5.x models do not accept
+    /// it, so only the original three get it by default.
     fn default_reasoning_effort(model: &str) -> Option<&'static str> {
-        if Self::is_gpt5_model(model) {
-            Some("minimal")
-        } else {
-            None
+        match Self::base_model(model).as_str() {
+            "gpt-5" | "gpt-5-mini" | "gpt-5-nano" => Some("minimal"),
+            _ => None,
         }
     }
 
@@ -288,22 +298,20 @@ impl ChatClient {
                 }
             }
             if debug
-                && Self::is_gpt5_model(model)
+                && Self::is_reasoning_model(model)
                 && self.temperature_user_override
                 && self.temperature_override.is_some()
             {
                 eprintln!(
-                    "[warn] Overriding requested temperature to 1.0 for GPT-5 model '{}'.",
+                    "[warn] Overriding requested temperature to 1.0 for reasoning model '{}'.",
                     model
                 );
             }
-            let reasoning = if Self::default_reasoning_effort(model).is_some() {
-                self.reasoning_effort
-                    .as_deref()
-                    .or_else(|| Self::default_reasoning_effort(model))
-            } else {
-                None
-            };
+            // A configured effort is always sent; the default only to models that accept it.
+            let reasoning = self
+                .reasoning_effort
+                .as_deref()
+                .or_else(|| Self::default_reasoning_effort(model));
             if let Some(effort) = reasoning {
                 obj.insert("reasoning_effort".into(), json!(effort));
             } else {
@@ -1444,6 +1452,79 @@ mod tests {
     use rcgen::{CertifiedKey, generate_simple_self_signed};
     use std::fs;
     use tempfile::tempdir;
+
+    fn params(model: &str, client: super::ChatClient) -> serde_json::Value {
+        let mut body = serde_json::json!({"model": model, "messages": []});
+        client.apply_model_defaults(&mut body, model, false);
+        body.as_object_mut().unwrap().remove("messages");
+        body.as_object_mut().unwrap().remove("model");
+        body
+    }
+
+    fn client() -> super::ChatClient {
+        super::ChatClient::new(
+            "http://x".into(),
+            "k".into(),
+            std::collections::HashMap::new(),
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn model_parameters_follow_the_model_family() {
+        use serde_json::json;
+        let cases = [
+            (
+                "gpt-4.1-mini",
+                json!({"max_tokens": 4096, "temperature": 0.15f32}),
+            ),
+            (
+                "openai/gpt-4.1-nano",
+                json!({"max_tokens": 4096, "temperature": 0.15f32}),
+            ),
+            (
+                "gpt-5-mini",
+                json!({"max_completion_tokens": 16384, "reasoning_effort": "minimal"}),
+            ),
+            (
+                "openai/gpt-5-mini",
+                json!({"max_completion_tokens": 16384, "reasoning_effort": "minimal"}),
+            ),
+            ("gpt-5.1", json!({"max_completion_tokens": 16384})),
+            ("o1-preview", json!({"max_completion_tokens": 16384})),
+            ("o3-mini", json!({"max_completion_tokens": 16384})),
+            ("o4-mini", json!({"max_completion_tokens": 16384})),
+            ("openai/o4-mini", json!({"max_completion_tokens": 16384})),
+            (
+                "ollama-model",
+                json!({"max_tokens": 4096, "temperature": 0.15f32}),
+            ),
+        ];
+        for (model, want) in cases {
+            assert_eq!(params(model, client()), want, "{model}");
+        }
+    }
+
+    #[test]
+    fn configured_reasoning_effort_is_always_sent() {
+        let c = client().with_reasoning_effort(Some("high".into()));
+        assert_eq!(params("openai/gpt-oss-120b", c)["reasoning_effort"], "high");
+        let c = client().with_reasoning_effort(Some("low".into()));
+        assert_eq!(params("o3-mini", c)["reasoning_effort"], "low");
+    }
+
+    #[test]
+    fn reasoning_models_get_temperature_one_only_when_asked() {
+        let c = client().with_temperature(Some(0.4), true);
+        assert_eq!(params("o4-mini", c)["temperature"], 1.0);
+        let c = client().with_temperature(Some(0.4), true);
+        assert_eq!(
+            params("gpt-4.1", c)["temperature"],
+            serde_json::json!(0.4f32)
+        );
+    }
 
     #[test]
     fn format_api_error_adds_openrouter_hint_for_402() {

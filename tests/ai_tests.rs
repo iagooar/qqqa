@@ -143,7 +143,7 @@ async fn chat_once_uses_legacy_parameters_for_old_models() {
 }
 
 #[tokio::test]
-async fn chat_once_defaults_temperature_for_o1_models() {
+async fn chat_once_omits_temperature_for_o1_models() {
     if sandbox_blocks_binding() {
         eprintln!("[skip] sandbox blocks binding to 127.0.0.1; skipping httpmock test");
         return;
@@ -160,11 +160,8 @@ async fn chat_once_defaults_temperature_for_o1_models() {
                 let payload: Value =
                     serde_json::from_slice(body).expect("request body should be valid JSON");
                 assert!(payload.get("max_completion_tokens").is_some());
-                let temp = payload
-                    .get("temperature")
-                    .and_then(|v| v.as_f64())
-                    .expect("temperature present for o1 model");
-                assert!((temp - 0.15).abs() < 1e-6);
+                // o-series models reject a custom temperature.
+                assert!(payload.get("temperature").is_none());
                 true
             });
         then.status(200)
