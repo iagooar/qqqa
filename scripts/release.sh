@@ -307,7 +307,8 @@ fi
 # uncommitted version bump without touching the working tree.
 src_dir="qqqa-${ver}"
 src_tarball="${artifact_root}/qqqa-v${ver}-src.tar.gz"
-src_tree=$(git stash create)
+# Prints nothing (and may fail) when the tree is clean; HEAD is used then.
+src_tree=$(git stash create 2>/dev/null || true)
 git archive --format=tar.gz --prefix="${src_dir}/" -o "$src_tarball" "${src_tree:-HEAD}"
 src_sha=$(shasum -a 256 "$src_tarball" | awk '{print $1}')
 
