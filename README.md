@@ -2,6 +2,8 @@
 
 Fast, stateless LLM-powered assistant for your shell: qq answers; qa runs commands
 
+> **Status:** feature-complete. Maintained for bug fixes and security issues; no new features planned. See [#61](https://github.com/iagooar/qqqa/issues/61).
+
 ## What is qqqa
 
 qqqa is a two-in-one, stateless CLI tool that brings LLM assistance to the command line without ceremony.
