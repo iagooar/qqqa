@@ -21,7 +21,7 @@ The two binaries are:
 
 qqqa runs on macOS, Linux, and Windows.
 
-By default the repo includes profiles for OpenRouter (default), OpenAI, Groq, Gemini (API + CLI), a local Ollama runtime, the Codex CLI (piggyback on ChatGPT), and the Claude Code CLI (reuse your Claude subscription). An Anthropic profile stub exists in the config for future work but is not wired up yet.
+By default the repo includes profiles for OpenRouter (default), LLMTR, OpenAI, Groq, Gemini (API + CLI), a local Ollama runtime, the Codex CLI (piggyback on ChatGPT), and the Claude Code CLI (reuse your Claude subscription). An Anthropic profile stub exists in the config for future work but is not wired up yet.
 
 
 
@@ -166,6 +166,7 @@ If `~/.qq/config.json` already exists, the init command keeps it untouched and e
 The initializer lets you choose the default provider:
 
 - OpenRouter + `qwen/qwen3.8-27b` on Cerebras (default, very fast and inexpensive)
+- LLMTR + `qwen/qwen3.8-27b-free` (OpenAI-compatible gateway at `https://llmtr.com/v1`)
 - Groq + `openai/gpt-oss-20b` (faster, cheap paid tier)
 - OpenAI + `gpt-6-luna` (inexpensive)
 - Anthropic + `claude-haiku-5-5` (placeholder until their Messages API finalizes)
@@ -179,6 +180,7 @@ The initializer lets you choose the default provider:
 It also offers to store an API key in the config (optional). If you prefer environment variables, leave it blank and set one of:
 
 - `OPENROUTER_API_KEY` for OpenRouter (default)
+- `LLMTR_API_KEY` for LLMTR
 - `GROQ_API_KEY` for Groq
 - `OPENAI_API_KEY` for OpenAI
 - `GEMINI_API_KEY` for Gemini (Google AI Studio)
@@ -189,6 +191,7 @@ Built-in defaults (override any of them in `~/.qq/config.json`):
 
 - Providers
   - `openrouter` → base `https://openrouter.ai/api/v1`, env `OPENROUTER_API_KEY`, default headers `HTTP-Referer=https://github.com/iagooar/qqqa` and `X-Title=qqqa`
+  - `llmtr` → base `https://llmtr.com/v1`, env `LLMTR_API_KEY`
   - `openai` → base `https://api.openai.com/v1`, env `OPENAI_API_KEY`
   - `groq` → base `https://api.groq.com/openai/v1`, env `GROQ_API_KEY`
   - `ollama` → base `http://127.0.0.1:11434/v1`, env `OLLAMA_API_KEY` (qqqa auto-injects a non-empty placeholder if you leave it unset)
@@ -199,6 +202,7 @@ Built-in defaults (override any of them in `~/.qq/config.json`):
   - `claude_cli` → mode `cli`, binary `claude` (install `@anthropic-ai/claude-code`; auth handled by `claude login`). Optional `"model_override"` pins Claude Code’s `--model` flag without touching your profile’s model.
 - Profiles
   - `openrouter` → model `qwen/qwen3.8-27b`, routed to Cerebras with `"extra_body": {"provider": {"order": ["cerebras"]}}` (default)
+  - `llmtr` → LLMTR, model `qwen/qwen3.8-27b-free`
   - `luna` → OpenRouter, model `openai/gpt-6-luna`
   - `haiku` → OpenRouter, model `anthropic/claude-haiku-5.5`
   - `openai` → model `gpt-6-luna`
@@ -461,6 +465,7 @@ qq -m openai/gpt-oss-20b "explain this awk one-liner"
 ## Environment variables
 
 - `OPENROUTER_API_KEY` for the OpenRouter provider (default)
+- `LLMTR_API_KEY` for the LLMTR provider
 - `GROQ_API_KEY` for the Groq provider
 - `OPENAI_API_KEY` for the OpenAI provider
 

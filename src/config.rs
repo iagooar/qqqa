@@ -262,6 +262,22 @@ impl Default for Config {
             },
         );
         model_providers.insert(
+            "llmtr".to_string(),
+            ModelProvider {
+                name: "LLMTR".to_string(),
+                base_url: "https://llmtr.com/v1".to_string(),
+                env_key: "LLMTR_API_KEY".to_string(),
+                api_key: None,
+                local: false,
+                tls: None,
+                mode: ProviderMode::Http,
+                headers: HashMap::new(),
+                extra_body: Default::default(),
+                extra: Default::default(),
+                cli: None,
+            },
+        );
+        model_providers.insert(
             "groq".to_string(),
             ModelProvider {
                 name: "Groq".to_string(),
@@ -422,6 +438,10 @@ impl Default for Config {
         profiles.insert(
             "haiku".to_string(),
             Profile::on("openrouter", "anthropic/claude-haiku-5.5"),
+        );
+        profiles.insert(
+            "llmtr".to_string(),
+            Profile::on("llmtr", "qwen/qwen3.8-27b-free"),
         );
         profiles.insert(
             "openai".to_string(),
@@ -1025,7 +1045,10 @@ impl Config {
         println!(
             "  [9] Gemini CLI — use the local `gemini` binary (Google sign-in or GEMINI_API_KEY)"
         );
-        print!("Enter 1-9 [1]: ");
+        println!(
+            "  [10] LLMTR — qwen/qwen3.8-27b-free (OpenAI-compatible gateway at https://llmtr.com/v1)"
+        );
+        print!("Enter 1-10 [1]: ");
         io::stdout().flush().ok();
         let mut choice = String::new();
         io::stdin().read_line(&mut choice).ok();
@@ -1041,6 +1064,7 @@ impl Config {
             }
             "8" | "gemini" => cfg.default_profile = "gemini".to_string(),
             "9" | "gemini-cli" | "gemini_cli" => cfg.default_profile = "gemini_cli".to_string(),
+            "10" | "llmtr" => cfg.default_profile = "llmtr".to_string(),
             "1" | "openrouter" => cfg.default_profile = "openrouter".to_string(),
             _ => cfg.default_profile = "openrouter".to_string(),
         }

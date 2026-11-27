@@ -523,6 +523,36 @@ fn config_from_an_older_release_gets_new_profiles() {
 }
 
 #[test]
+fn default_includes_llmtr_openai_compatible_provider() {
+    let cfg = Config::default();
+    let provider = cfg.model_providers.get("llmtr").expect("llmtr provider");
+    assert_eq!(provider.name, "LLMTR");
+    assert_eq!(provider.base_url, "https://llmtr.com/v1");
+    assert_eq!(provider.env_key, "LLMTR_API_KEY");
+    assert!(!provider.local);
+    let profile = cfg.profiles.get("llmtr").expect("llmtr profile");
+    assert_eq!(profile.model_provider, "llmtr");
+    assert_eq!(profile.model, "qwen/qwen3.8-27b-free");
+}
+
+#[test]
+fn config_from_an_older_release_gets_llmtr_provider() {
+    let dir = tempdir().unwrap();
+    let mut old = serde_json::to_value(Config::default()).unwrap();
+    old["profiles"].as_object_mut().unwrap().remove("llmtr");
+    old["model_providers"]
+        .as_object_mut()
+        .unwrap()
+        .remove("llmtr");
+    let path = write_json(dir.path(), &old);
+    let cfg = Config::load_from(&path).unwrap();
+    assert!(cfg.profiles.contains_key("llmtr"));
+    let provider = cfg.model_providers.get("llmtr").expect("llmtr provider");
+    assert_eq!(provider.base_url, "https://llmtr.com/v1");
+    assert_eq!(provider.env_key, "LLMTR_API_KEY");
+}
+
+#[test]
 fn nested_override_keeps_the_other_defaults() {
     let dir = tempdir().unwrap();
     let path = write_json(
